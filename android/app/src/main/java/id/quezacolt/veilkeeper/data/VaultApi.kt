@@ -73,4 +73,27 @@ interface VaultApi {
         @Header("Authorization") bearerToken: String,
         @Path("id") id: Long,
     ): Response<Unit>
+
+    // --- Sprint 5: attachments ------------------------------------------
+
+    @POST("api/v1/vault/items/{id}/attachments")
+    suspend fun uploadAttachment(
+        @Header("Authorization") bearerToken: String,
+        @Path("id") itemId: Long,
+        @Body request: UploadAttachmentRequest,
+    ): Response<AttachmentDto>
+
+    @GET("api/v1/vault/items/{id}/attachments/{attachmentId}")
+    suspend fun getAttachment(
+        @Header("Authorization") bearerToken: String,
+        @Path("id") itemId: Long,
+        @Path("attachmentId") attachmentId: Long,
+    ): Response<AttachmentDataDto>
+
+    @DELETE("api/v1/vault/items/{id}/attachments/{attachmentId}")
+    suspend fun deleteAttachment(
+        @Header("Authorization") bearerToken: String,
+        @Path("id") itemId: Long,
+        @Path("attachmentId") attachmentId: Long,
+    ): Response<Unit>
 }

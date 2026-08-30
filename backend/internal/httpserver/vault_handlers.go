@@ -174,6 +174,16 @@ func (d *vaultDeps) handleDeleteVaultItem(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Sprint 5: the attachments FK is ON DELETE CASCADE (cleans up DB rows
+	// automatically), but never the encrypted files on disk -- clean those
+	// up first so deleting an item never leaves orphaned blobs behind. This
+	// is best-effort (see deleteAttachmentsForItem's doc comment) and runs
+	// even if the item turns out not to exist / not belong to the caller --
+	// ListAttachmentsForItem in that case just returns an empty list, so
+	// there is no meaningful behavior difference, only avoided extra
+	// branching.
+	d.deleteAttachmentsForItem(r.Context(), userID, itemID)
+
 	err := d.store.DeleteVaultItem(r.Context(), userID, itemID)
 	switch {
 	case err == nil:

@@ -3,6 +3,7 @@ package id.quezacolt.veilkeeper.data
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -115,5 +116,60 @@ class VaultRepositoryTest {
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.ServerError)
+    }
+
+    // --- Sprint 5: attachments -----------------------------------------
+
+    @Test
+    fun `uploadAttachment then downloadAttachment round-trips filename and bytes`() = runTest {
+        val category = repository.createCategory("Servers").getOrThrow()
+        val item = repository.createItem(category.id, "VPN", listOf(ContentBlockDto(type = "text", value = "x"))).getOrThrow()
+
+        val originalBytes = "not-really-a-jpeg-but-stands-in-for-one".toByteArray()
+        val ref = repository.uploadAttachment(item.id, "vpn-screenshot.jpg", "image/jpeg", originalBytes).getOrThrow()
+
+        assertEquals("image/jpeg", ref.mimeType)
+
+        // The fake API stands in for the server: verify it only ever holds
+        // opaque base64 ciphertext, never the plaintext filename or bytes.
+        val stored = api.attachments.getValue(ref.id)
+        assertTrue(
+            "stored encrypted_data must not contain the plaintext bytes",
+            !String(originalBytes).let { stored.dto.encryptedData.contains(it) },
+        )
+        assertTrue(
+            "stored encrypted_filename must not contain the plaintext filename",
+            !stored.dto.encryptedFilename.contains("vpn-screenshot"),
+        )
+
+        val downloaded = repository.downloadAttachment(item.id, ref.id).getOrThrow()
+        assertEquals("vpn-screenshot.jpg", downloaded.filename)
+        assertEquals("image/jpeg", downloaded.mimeType)
+        assertArrayEquals(originalBytes, downloaded.bytes)
+    }
+
+    @Test
+    fun `deleteAttachment removes it from the fake backend`() = runTest {
+        val category = repository.createCategory("Servers").getOrThrow()
+        val item = repository.createItem(category.id, "VPN", listOf(ContentBlockDto(type = "text", value = "x"))).getOrThrow()
+        val ref = repository.uploadAttachment(item.id, "a.jpg", "image/jpeg", "bytes".toByteArray()).getOrThrow()
+
+        repository.deleteAttachment(item.id, ref.id).getOrThrow()
+
+        val result = repository.downloadAttachment(item.id, ref.id)
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.NotFound)
+    }
+
+    @Test
+    fun `uploadAttachment fails with NotUnlocked when there is no VDK`() = runTest {
+        val category = repository.createCategory("Servers").getOrThrow()
+        val item = repository.createItem(category.id, "VPN", listOf(ContentBlockDto(type = "text", value = "x"))).getOrThrow()
+        AuthSessionHolder.clear()
+
+        val result = repository.uploadAttachment(item.id, "a.jpg", "image/jpeg", "bytes".toByteArray())
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.NotUnlocked)
     }
 }

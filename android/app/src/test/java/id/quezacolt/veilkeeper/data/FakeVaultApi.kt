@@ -17,6 +17,13 @@ class FakeVaultApi : VaultApi {
     val categories = mutableMapOf<Long, CategoryDto>()
     val items = mutableMapOf<Long, VaultItemDto>()
 
+    // Sprint 5: attachments -- stores the "encrypted" bytes as given (this
+    // fake never encrypts/decrypts anything itself, same as the real
+    // backend never touching the bytes; VaultRepositoryTest is what
+    // actually proves AttachmentCrypto's encrypt/decrypt round-trips).
+    data class FakeAttachment(val itemId: Long, val dto: AttachmentDataDto)
+    val attachments = mutableMapOf<Long, FakeAttachment>()
+
     var forcedErrorCode: Int? = null // when set, every call fails with this code
 
     /**
@@ -107,6 +114,42 @@ class FakeVaultApi : VaultApi {
         if (!items.containsKey(id)) return errorResponse(404)
         items.remove(id)
         recomputeItemCounts()
+        return Response.success(Unit)
+    }
+
+    // --- Sprint 5: attachments ------------------------------------------
+
+    override suspend fun uploadAttachment(bearerToken: String, itemId: Long, request: UploadAttachmentRequest): Response<AttachmentDto> {
+        forcedErrorCode?.let { return errorResponse(it) }
+        if (!items.containsKey(itemId)) return errorResponse(404)
+        val id = nextId++
+        val dataDto = AttachmentDataDto(
+            id = id,
+            vaultItemId = itemId,
+            encryptedFilename = request.encryptedFilename,
+            mimeType = request.mimeType,
+            size = request.encryptedData.length.toLong(),
+            encryptedData = request.encryptedData,
+            createdAt = "2026-01-01T00:00:00Z",
+        )
+        attachments[id] = FakeAttachment(itemId, dataDto)
+        return Response.success(
+            AttachmentDto(dataDto.id, dataDto.vaultItemId, dataDto.encryptedFilename, dataDto.mimeType, dataDto.size, dataDto.createdAt),
+        )
+    }
+
+    override suspend fun getAttachment(bearerToken: String, itemId: Long, attachmentId: Long): Response<AttachmentDataDto> {
+        forcedErrorCode?.let { return errorResponse(it) }
+        val fake = attachments[attachmentId] ?: return errorResponse(404)
+        if (fake.itemId != itemId) return errorResponse(404)
+        return Response.success(fake.dto)
+    }
+
+    override suspend fun deleteAttachment(bearerToken: String, itemId: Long, attachmentId: Long): Response<Unit> {
+        forcedErrorCode?.let { return errorResponse(it) }
+        val fake = attachments[attachmentId] ?: return errorResponse(404)
+        if (fake.itemId != itemId) return errorResponse(404)
+        attachments.remove(attachmentId)
         return Response.success(Unit)
     }
 

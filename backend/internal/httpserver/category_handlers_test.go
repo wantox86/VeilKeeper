@@ -12,8 +12,20 @@ import (
 // testDeps, so auth and vault handlers can be exercised together (e.g.
 // register a real user, log in, then hit category/vault-item routes with
 // the resulting session token via requireSession).
-func testVaultDeps(fs *fakeAuthStore) *vaultDeps {
-	return &vaultDeps{store: fs, logger: discardLogger()}
+func testVaultDeps(t *testing.T, fs *fakeAuthStore) *vaultDeps {
+	t.Helper()
+	return &vaultDeps{store: fs, logger: discardLogger(), attachmentsDir: t.TempDir()}
+}
+
+// withPathIDs injects both {id} and {attachmentId} path values, for the
+// two-level attachment routes (POST/GET/DELETE
+// /api/v1/vault/items/{id}/attachments/{attachmentId}).
+func withPathIDs(h http.HandlerFunc, id, attachmentID int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("id", strconv.FormatInt(id, 10))
+		r.SetPathValue("attachmentId", strconv.FormatInt(attachmentID, 10))
+		h(w, r)
+	}
 }
 
 // authedHandler wraps h with requireSession backed by fs, mirroring how
@@ -52,7 +64,7 @@ func authHeader(token string) map[string]string {
 
 func TestRegister_CreatesDefaultCategories(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "defaults@example.com")
 
 	rec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, authHeader(token))
@@ -82,7 +94,7 @@ func TestRegister_CreatesDefaultCategories(t *testing.T) {
 
 func TestCategory_CreateRenameDelete(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "catcrud@example.com")
 
 	createRec := doJSON(t, authedHandler(fs, vDeps.handleCreateCategory), http.MethodPost, "/api/v1/categories", createCategoryRequest{Name: "Servers"}, authHeader(token))
@@ -119,7 +131,7 @@ func TestCategory_CreateRenameDelete(t *testing.T) {
 // category, never delete them.
 func TestCategory_DeleteReassignsItemsToUncategorized(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "reassign@example.com")
 
 	catRec := doJSON(t, authedHandler(fs, vDeps.handleCreateCategory), http.MethodPost, "/api/v1/categories", createCategoryRequest{Name: "Temp"}, authHeader(token))
@@ -168,7 +180,7 @@ func TestCategory_DeleteReassignsItemsToUncategorized(t *testing.T) {
 
 func TestCategory_UncategorizedCannotBeDeleted(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "protectuncategorized@example.com")
 
 	// Force-create the Uncategorized category by deleting a throwaway one.
@@ -200,7 +212,7 @@ func TestCategory_UncategorizedCannotBeDeleted(t *testing.T) {
 
 func TestCategory_UserIsolation(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	tokenA := loginAndGetToken(t, deps, "usera-cat@example.com")
 	tokenB := loginAndGetToken(t, deps, "userb-cat@example.com")
 
@@ -233,7 +245,7 @@ func TestCategory_UserIsolation(t *testing.T) {
 
 func TestVaultItem_UserIsolation(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	tokenA := loginAndGetToken(t, deps, "usera-item@example.com")
 	tokenB := loginAndGetToken(t, deps, "userb-item@example.com")
 
@@ -298,7 +310,7 @@ func TestVaultItem_UserIsolation(t *testing.T) {
 
 func TestVaultRoutes_RequireValidSession(t *testing.T) {
 	_, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 
 	rec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, nil)
 	if rec.Code != http.StatusUnauthorized {

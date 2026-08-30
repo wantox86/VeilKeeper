@@ -1,5 +1,6 @@
 package id.quezacolt.veilkeeper.data
 
+import id.quezacolt.veilkeeper.crypto.AttachmentCrypto
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.crypto.VaultItemCrypto
 import id.quezacolt.veilkeeper.crypto.VaultItemPayload
@@ -32,6 +33,21 @@ data class DecryptedVaultItem(
 ) {
     val preview: String get() = buildPreview(content)
 }
+
+/** Metadata about a just-uploaded attachment, enough to build an "image" [ContentBlockDto]. */
+data class AttachmentRef(
+    val id: Long,
+    val mimeType: String,
+    val size: Long,
+)
+
+/** A fully downloaded-and-decrypted attachment, ready for local preview. */
+data class DecryptedAttachment(
+    val id: Long,
+    val filename: String,
+    val mimeType: String,
+    val bytes: ByteArray,
+)
 
 /**
  * Orchestrates the Sprint 2 vault foundation flows: client-side encryption
@@ -121,6 +137,52 @@ class VaultRepository(
 
     suspend fun deleteItem(id: Long): Result<Unit> = withContext(ioDispatcher) {
         withNoBody { api.deleteVaultItem(bearer(), id) }
+    }
+
+    // --- attachments (Sprint 5) --------------------------------------------
+
+    /**
+     * Encrypts [filename] and [fileBytes] with the VDK and uploads them as
+     * an attachment of vault item [itemId] (which must already exist
+     * server-side -- the endpoint is scoped under
+     * `/vault/items/{id}/attachments`, see CLAUDE.md's Sprint 5 report for
+     * why Add Item's flow creates the item first for image blocks).
+     * [fileBytes] should already be compressed by the caller (SPEC-BASE.md
+     * Section 17's "Compress if appropriate" step,
+     * see [id.quezacolt.veilkeeper.data.ImageCompressor]) -- this method
+     * only handles encryption + upload.
+     */
+    suspend fun uploadAttachment(itemId: Long, filename: String, mimeType: String, fileBytes: ByteArray): Result<AttachmentRef> =
+        withContext(ioDispatcher) {
+            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            val (encryptedFilename, encryptedData) = withContext(computeDispatcher) {
+                AttachmentCrypto.encryptFilename(vdk, filename) to AttachmentCrypto.encryptFile(vdk, fileBytes)
+            }
+            withBody({
+                api.uploadAttachment(
+                    bearer(),
+                    itemId,
+                    UploadAttachmentRequest(encryptedFilename.b64(), mimeType, encryptedData.b64()),
+                )
+            }) { dto -> AttachmentRef(dto.id, dto.mimeType, dto.size) }
+        }
+
+    /** Downloads attachment [attachmentId] of item [itemId] and decrypts filename + bytes with the VDK. */
+    suspend fun downloadAttachment(itemId: Long, attachmentId: Long): Result<DecryptedAttachment> =
+        withContext(ioDispatcher) {
+            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            withBody({ api.getAttachment(bearer(), itemId, attachmentId) }) { dto ->
+                withContext(computeDispatcher) {
+                    val filename = AttachmentCrypto.decryptFilename(vdk, dto.encryptedFilename.fromB64())
+                    val bytes = AttachmentCrypto.decryptFile(vdk, dto.encryptedData.fromB64())
+                    DecryptedAttachment(dto.id, filename, dto.mimeType, bytes)
+                }
+            }
+        }
+
+    /** Deletes attachment [attachmentId] of item [itemId], both server-side row and its encrypted file. */
+    suspend fun deleteAttachment(itemId: Long, attachmentId: Long): Result<Unit> = withContext(ioDispatcher) {
+        withNoBody { api.deleteAttachment(bearer(), itemId, attachmentId) }
     }
 
     // --- helpers -----------------------------------------------------------

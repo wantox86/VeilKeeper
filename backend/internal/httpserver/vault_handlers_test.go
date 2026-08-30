@@ -53,7 +53,7 @@ func aesGCMDecryptForTest(t *testing.T, key, nonceAndCiphertext []byte) []byte {
 
 func TestVaultItem_CreateListGetUpdateDelete(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "itemcrud@example.com")
 
 	catsRec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, authHeader(token))
@@ -115,7 +115,7 @@ func TestVaultItem_CreateListGetUpdateDelete(t *testing.T) {
 
 func TestVaultItem_CreateInNonexistentCategoryRejected(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "badcat@example.com")
 
 	rec := doJSON(t, authedHandler(fs, vDeps.handleCreateVaultItem), http.MethodPost, "/api/v1/vault/items", createVaultItemRequest{
@@ -129,7 +129,7 @@ func TestVaultItem_CreateInNonexistentCategoryRejected(t *testing.T) {
 
 func TestVaultItem_EmptyPayloadRejected(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "emptypayload@example.com")
 
 	catsRec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, authHeader(token))
@@ -147,7 +147,7 @@ func TestVaultItem_EmptyPayloadRejected(t *testing.T) {
 
 func TestVaultItem_ListFilterByCategory(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "filterbycat@example.com")
 
 	catsRec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, authHeader(token))
@@ -189,7 +189,7 @@ func itoaTest(id int64) string {
 // transparent, byte-exact ciphertext store.
 func TestVaultItem_EndToEndEncryptionRoundTrip(t *testing.T) {
 	deps, fs := testDeps()
-	vDeps := testVaultDeps(fs)
+	vDeps := testVaultDeps(t, fs)
 	token := loginAndGetToken(t, deps, "e2e@example.com")
 
 	catsRec := doJSON(t, authedHandler(fs, vDeps.handleListCategories), http.MethodGet, "/api/v1/categories", nil, authHeader(token))

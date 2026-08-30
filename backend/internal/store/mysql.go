@@ -430,3 +430,77 @@ func (s *MySQLStore) DeleteVaultItem(ctx context.Context, userID, itemID int64) 
 	}
 	return nil
 }
+
+// --- Sprint 5: attachments -------------------------------------------------
+
+func (s *MySQLStore) CreateAttachment(ctx context.Context, userID, vaultItemID int64, encryptedFilename []byte, mimeType string, size int64, storagePath string) (Attachment, error) {
+	if _, err := s.GetVaultItem(ctx, userID, vaultItemID); err != nil {
+		return Attachment{}, err
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO attachments (user_id, vault_item_id, encrypted_filename, mime_type, size, storage_path)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		userID, vaultItemID, encryptedFilename, mimeType, size, storagePath)
+	if err != nil {
+		return Attachment{}, fmt.Errorf("store: create attachment: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Attachment{}, fmt.Errorf("store: create attachment: read insert id: %w", err)
+	}
+	return s.GetAttachment(ctx, userID, id)
+}
+
+func (s *MySQLStore) GetAttachment(ctx context.Context, userID, attachmentID int64) (Attachment, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, vault_item_id, encrypted_filename, mime_type, size, storage_path, created_at
+		FROM attachments WHERE id = ? AND user_id = ?`, attachmentID, userID)
+
+	var a Attachment
+	if err := row.Scan(&a.ID, &a.UserID, &a.VaultItemID, &a.EncryptedFilename, &a.MimeType, &a.Size, &a.StoragePath, &a.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Attachment{}, ErrNotFound
+		}
+		return Attachment{}, fmt.Errorf("store: get attachment: %w", err)
+	}
+	return a, nil
+}
+
+func (s *MySQLStore) ListAttachmentsForItem(ctx context.Context, userID, vaultItemID int64) ([]Attachment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, vault_item_id, encrypted_filename, mime_type, size, storage_path, created_at
+		FROM attachments WHERE user_id = ? AND vault_item_id = ?`, userID, vaultItemID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list attachments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Attachment
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(&a.ID, &a.UserID, &a.VaultItemID, &a.EncryptedFilename, &a.MimeType, &a.Size, &a.StoragePath, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("store: list attachments: scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list attachments: rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MySQLStore) DeleteAttachment(ctx context.Context, userID, attachmentID int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM attachments WHERE id = ? AND user_id = ?`, attachmentID, userID)
+	if err != nil {
+		return fmt.Errorf("store: delete attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete attachment: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

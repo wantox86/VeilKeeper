@@ -5,9 +5,20 @@ import kotlinx.serialization.json.Json
 
 /**
  * A single content block within a vault item (SPEC-BASE.md Section 13).
- * [type] is one of "text", "secret", "note" for Sprint 2 (image is Sprint
- * 5 -- attachments are out of scope). [label] is optional (notes typically
- * don't have one).
+ * [type] is one of "text", "secret", "note", or (Sprint 5) "image". [label]
+ * is optional (notes typically don't have one; for "image" it doubles as an
+ * optional caption/filename hint).
+ *
+ * **Sprint 5 attachment-linking decision** (CLAUDE.md didn't cover this
+ * before this sprint, resolved here): for `type == "image"`, [value] holds
+ * the attachment's server-assigned numeric ID as a decimal string (e.g.
+ * `"42"`), NOT the image bytes -- those live server-side as an encrypted
+ * blob on disk (see [id.quezacolt.veilkeeper.data.VaultRepository.uploadAttachment]),
+ * fetched separately via `GET .../attachments/{attachmentId}` and decrypted
+ * on demand for preview. No new field was added to this class for that --
+ * the existing generic [value] string already fits, and adding an
+ * `attachmentId: Long?` field used by exactly one block type would be
+ * needless duplication (SPEC-BASE.md Section 56 Rule 1).
  */
 @Serializable
 data class ContentBlockDto(

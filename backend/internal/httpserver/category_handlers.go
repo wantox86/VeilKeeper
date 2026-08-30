@@ -12,10 +12,16 @@ import (
 	"github.com/wantox86/veilkeeper/backend/internal/store"
 )
 
-// vaultDeps bundles what the Sprint 2 category/vault-item handlers need.
+// vaultDeps bundles what the Sprint 2 category/vault-item handlers (and, from
+// Sprint 5, attachment_handlers.go) need.
 type vaultDeps struct {
 	store  store.Store
 	logger *slog.Logger
+
+	// attachmentsDir is the root directory encrypted attachment blobs are
+	// written to/read from (SPEC-BASE.md Section 7). Unused by
+	// category/vault-item handlers themselves, only by attachment_handlers.go.
+	attachmentsDir string
 }
 
 const maxVaultBodyBytes = 1 << 20 // 1 MiB -- generous for an encrypted vault item payload

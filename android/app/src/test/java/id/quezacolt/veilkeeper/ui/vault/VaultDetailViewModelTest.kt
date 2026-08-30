@@ -8,6 +8,7 @@ import id.quezacolt.veilkeeper.ui.auth.MainDispatcherRule
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -78,5 +79,63 @@ class VaultDetailViewModelTest {
         val state = viewModel.uiState.value
         assertFalse(state.isLoading)
         assertTrue(state.errorMessage != null)
+    }
+
+    // --- Sprint 5: attachments -------------------------------------------
+
+    @Test
+    fun `loadAttachmentImage downloads and decrypts, transitioning Loading to Loaded`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "With Image", emptyList()).getOrThrow()
+        val ref = repository.uploadAttachment(item.id, "shot.jpg", "image/jpeg", "fake-bytes".toByteArray()).getOrThrow()
+
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+
+        viewModel.loadAttachmentImage(ref.id)
+        assertTrue(
+            "expected Loading state immediately after the call, before the coroutine completes",
+            viewModel.uiState.value.attachmentImages[ref.id] is AttachmentImageState.Loading,
+        )
+        advanceUntilIdle()
+
+        val loaded = viewModel.uiState.value.attachmentImages[ref.id]
+        assertTrue(loaded is AttachmentImageState.Loaded)
+        assertArrayEquals("fake-bytes".toByteArray(), (loaded as AttachmentImageState.Loaded).bytes)
+        assertEquals("image/jpeg", loaded.mimeType)
+    }
+
+    @Test
+    fun `loadAttachmentImage does not re-fetch an already-loaded attachment`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "With Image", emptyList()).getOrThrow()
+        val ref = repository.uploadAttachment(item.id, "shot.jpg", "image/jpeg", "fake-bytes".toByteArray()).getOrThrow()
+
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.loadAttachmentImage(ref.id)
+        advanceUntilIdle()
+
+        // Deleting the attachment out from under the ViewModel: if
+        // loadAttachmentImage re-fetched, the state would flip to Error.
+        repository.deleteAttachment(item.id, ref.id).getOrThrow()
+        viewModel.loadAttachmentImage(ref.id)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.attachmentImages[ref.id] is AttachmentImageState.Loaded)
+    }
+
+    @Test
+    fun `loadAttachmentImage surfaces a failure as an Error state instead of crashing`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "No Image", emptyList()).getOrThrow()
+
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+
+        viewModel.loadAttachmentImage(999999L)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.attachmentImages[999999L] is AttachmentImageState.Error)
     }
 }

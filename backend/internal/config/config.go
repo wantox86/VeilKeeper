@@ -27,6 +27,11 @@ type Config struct {
 	DB DBConfig
 
 	Auth AuthConfig
+
+	// AttachmentsDir is the root directory encrypted attachment blobs are
+	// written to/read from (SPEC-BASE.md Section 7). Must match the
+	// docker-compose.yml bind mount target (/data/attachments).
+	AttachmentsDir string
 }
 
 // AuthConfig holds Sprint 1 authentication settings.
@@ -89,6 +94,7 @@ func Load(logger *slog.Logger) Config {
 			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
 			RateLimitWindow:            time.Minute,
 		},
+		AttachmentsDir: getEnv("ATTACHMENTS_DIR", "/data/attachments"),
 	}
 }
 

@@ -38,7 +38,7 @@ const (
 // caller only intends to exercise /health and /ready (as in this package's
 // own unit tests) -- the auth/vault routes will panic if hit against a nil
 // store, but that's not exercised by those tests.
-func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig) *http.ServeMux {
+func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig, attachmentsDir string) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
@@ -60,7 +60,7 @@ func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.A
 	// Sprint 2: vault foundation routes. All require a valid bearer session
 	// (requireSession), which injects the authenticated user ID used for
 	// ownership scoping in every store call these handlers make.
-	vDeps := &vaultDeps{store: st, logger: logger}
+	vDeps := &vaultDeps{store: st, logger: logger, attachmentsDir: attachmentsDir}
 	withAuth := func(h http.HandlerFunc) http.HandlerFunc { return requireSession(st, logger, nil, h) }
 
 	mux.HandleFunc("GET /api/v1/categories", withAuth(vDeps.handleListCategories))
@@ -73,6 +73,14 @@ func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.A
 	mux.HandleFunc("GET /api/v1/vault/items/{id}", withAuth(vDeps.handleGetVaultItem))
 	mux.HandleFunc("PUT /api/v1/vault/items/{id}", withAuth(vDeps.handleUpdateVaultItem))
 	mux.HandleFunc("DELETE /api/v1/vault/items/{id}", withAuth(vDeps.handleDeleteVaultItem))
+
+	// Sprint 5: attachments (SPEC-BASE.md Section 29). Ownership is checked
+	// twice per request: {id} must be a vault item owned by the caller, and
+	// {attachmentId} must both belong to the caller AND be attached to that
+	// same {id} (see attachment_handlers.go).
+	mux.HandleFunc("POST /api/v1/vault/items/{id}/attachments", withAuth(vDeps.handleUploadAttachment))
+	mux.HandleFunc("GET /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleGetAttachment))
+	mux.HandleFunc("DELETE /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleDeleteAttachment))
 
 	return mux
 }

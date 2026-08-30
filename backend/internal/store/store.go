@@ -196,12 +196,63 @@ type VaultItemStore interface {
 	DeleteVaultItem(ctx context.Context, userID, itemID int64) error
 }
 
+// --- Sprint 5: attachments -------------------------------------------------
+
+// Attachment is a user-owned file attached to a vault item. EncryptedFilename
+// is opaque client-produced AES-256-GCM ciphertext of the original filename
+// (filenames can leak metadata, so like vault content the server never sees
+// them in plaintext -- SPEC-BASE.md Section 17/32). MimeType/Size describe
+// the *encrypted* blob as uploaded, purely as non-sensitive metadata (the
+// server never inspects file contents). StoragePath is a path *relative* to
+// the server's attachments root (see config.Config.AttachmentsDir) -- never
+// an absolute host path, and never derived from client-controlled input (see
+// httpserver/attachment_handlers.go for how it's generated).
+type Attachment struct {
+	ID                int64
+	UserID            int64
+	VaultItemID       int64
+	EncryptedFilename []byte
+	MimeType          string
+	Size              int64
+	StoragePath       string
+	CreatedAt         time.Time
+}
+
+// AttachmentStore is the persistence contract for Sprint 5 attachment
+// metadata. It only ever stores metadata + a storage-path pointer; the
+// actual encrypted file bytes live on the local filesystem (SPEC-BASE.md
+// Section 7), written/read/deleted by the httpserver layer. All methods are
+// ownership-scoped by userID, same rules as CategoryStore/VaultItemStore.
+type AttachmentStore interface {
+	// CreateAttachment inserts a new attachment row. Returns ErrNotFound if
+	// vaultItemID doesn't belong to userID.
+	CreateAttachment(ctx context.Context, userID, vaultItemID int64, encryptedFilename []byte, mimeType string, size int64, storagePath string) (Attachment, error)
+
+	// GetAttachment returns a single attachment, ownership-checked (must
+	// belong to userID). Callers additionally verify it belongs to the
+	// expected vault item, since the URL also carries an item ID
+	// (SPEC-BASE.md Section 47: "User A cannot access ... User B
+	// attachments").
+	GetAttachment(ctx context.Context, userID, attachmentID int64) (Attachment, error)
+
+	// ListAttachmentsForItem returns every attachment on vaultItemID, owned
+	// by userID. Used to clean up files from disk when a vault item is
+	// deleted (the DB row itself cascades via FK, but files on disk do not).
+	ListAttachmentsForItem(ctx context.Context, userID, vaultItemID int64) ([]Attachment, error)
+
+	// DeleteAttachment deletes an attachment's metadata row, ownership
+	// checked. Callers are responsible for also deleting the underlying
+	// file from disk (the store layer only knows about the DB).
+	DeleteAttachment(ctx context.Context, userID, attachmentID int64) error
+}
+
 // Store is the full persistence contract for the API server (Sprint 1 auth
-// + Sprint 2 vault foundation). MySQLStore implements all three; handlers
-// depend on the narrower interfaces they actually need so tests can supply
-// minimal fakes.
+// + Sprint 2 vault foundation + Sprint 5 attachments). MySQLStore implements
+// all four; handlers depend on the narrower interfaces they actually need so
+// tests can supply minimal fakes.
 type Store interface {
 	AuthStore
 	CategoryStore
 	VaultItemStore
+	AttachmentStore
 }

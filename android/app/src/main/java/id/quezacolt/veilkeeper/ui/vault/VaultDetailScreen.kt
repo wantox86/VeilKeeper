@@ -2,16 +2,20 @@
 
 package id.quezacolt.veilkeeper.ui.vault
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Visibility
@@ -33,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
@@ -46,7 +51,9 @@ import id.quezacolt.veilkeeper.crypto.ContentBlockDto
  * revealed per-block; copy uses [id.quezacolt.veilkeeper.data.ClipboardSecurity]
  * (Sprint 3, SPEC-BASE.md Section 23) rather than the raw platform clipboard
  * -- marks the clip sensitive where the OS supports it and auto-clears it
- * after the user-configured delay (Settings screen).
+ * after the user-configured delay (Settings screen). Sprint 5: "image"
+ * blocks render as an [AttachmentImageCard] instead of a text row (Section
+ * 20's mockup: "Screenshot [encrypted image preview]").
  */
 @Composable
 fun VaultDetailScreen(
@@ -89,7 +96,11 @@ fun VaultDetailScreen(
             }
             state.item != null -> LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
                 items(state.item!!.content) { block ->
-                    ContentBlockCard(block)
+                    if (block.type == "image") {
+                        AttachmentImageCard(block, state.attachmentImages[block.value.toLongOrNull()], onLoad = viewModel::loadAttachmentImage)
+                    } else {
+                        ContentBlockCard(block)
+                    }
                 }
             }
         }
@@ -137,6 +148,53 @@ private fun ContentBlockCard(block: ContentBlockDto) {
                     },
                 ) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "Copy")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Renders an "image" content block (SPEC-BASE.md Section 20's mockup:
+ * "Screenshot [encrypted image preview]"). [attachmentState] is looked up by
+ * the caller from [VaultDetailUiState.attachmentImages] -- null means "not
+ * requested yet", which triggers [onLoad] via [LaunchedEffect] exactly once
+ * per block (keyed on the block itself, so it re-triggers only if the block
+ * identity actually changes, e.g. a fresh [id.quezacolt.veilkeeper.data.DecryptedVaultItem]
+ * after [id.quezacolt.veilkeeper.ui.vault.VaultDetailViewModel.refresh]).
+ *
+ * Decodes the decrypted bytes with [BitmapFactory] purely for local
+ * rendering -- this never touches the network or disk again once decrypted
+ * (matches FLAG_SECURE's existing app-wide screenshot protection, Sprint 3).
+ */
+@Composable
+private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: AttachmentImageState?, onLoad: (attachmentId: Long) -> Unit) {
+    val attachmentId = block.value.toLongOrNull()
+
+    LaunchedEffect(block) {
+        if (attachmentId != null) onLoad(attachmentId)
+    }
+
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            block.label?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium)
+            }
+            Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                when {
+                    attachmentId == null -> Icon(Icons.Filled.BrokenImage, contentDescription = "Invalid attachment reference")
+                    attachmentState == null || attachmentState is AttachmentImageState.Loading -> CircularProgressIndicator()
+                    attachmentState is AttachmentImageState.Error -> Icon(Icons.Filled.BrokenImage, contentDescription = attachmentState.message)
+                    attachmentState is AttachmentImageState.Loaded -> {
+                        val bitmap = remember(attachmentState) {
+                            BitmapFactory.decodeByteArray(attachmentState.bytes, 0, attachmentState.bytes.size)
+                        }
+                        if (bitmap != null) {
+                            Image(bitmap = bitmap.asImageBitmap(), contentDescription = block.label ?: "Attachment image")
+                        } else {
+                            Icon(Icons.Filled.BrokenImage, contentDescription = "Could not decode image")
+                        }
+                    }
                 }
             }
         }

@@ -14,24 +14,26 @@ import (
 // vault handlers without a real MySQL instance, mirroring the fakePinger
 // pattern already used for the Sprint 0 /ready handler test.
 type fakeAuthStore struct {
-	mu         sync.Mutex
-	nextID     int64
-	users      map[string]store.User // key: normalized email
-	usersByID  map[int64]store.User
-	devices    map[string]int64 // key: fmt userID:identifier
-	sessions   map[string]store.Session
-	categories map[int64]store.Category
-	items      map[int64]store.VaultItem
+	mu          sync.Mutex
+	nextID      int64
+	users       map[string]store.User // key: normalized email
+	usersByID   map[int64]store.User
+	devices     map[string]int64 // key: fmt userID:identifier
+	sessions    map[string]store.Session
+	categories  map[int64]store.Category
+	items       map[int64]store.VaultItem
+	attachments map[int64]store.Attachment
 }
 
 func newFakeAuthStore() *fakeAuthStore {
 	return &fakeAuthStore{
-		users:      make(map[string]store.User),
-		usersByID:  make(map[int64]store.User),
-		devices:    make(map[string]int64),
-		sessions:   make(map[string]store.Session),
-		categories: make(map[int64]store.Category),
-		items:      make(map[int64]store.VaultItem),
+		users:       make(map[string]store.User),
+		usersByID:   make(map[int64]store.User),
+		devices:     make(map[string]int64),
+		sessions:    make(map[string]store.Session),
+		categories:  make(map[int64]store.Category),
+		items:       make(map[int64]store.VaultItem),
+		attachments: make(map[int64]store.Attachment),
 	}
 }
 
@@ -347,6 +349,82 @@ func (f *fakeAuthStore) DeleteVaultItem(_ context.Context, userID, itemID int64)
 		return store.ErrNotFound
 	}
 	delete(f.items, itemID)
+
+	// Mirrors the real schema's `fk_attachments_vault_item ... ON DELETE
+	// CASCADE` (infra/mysql/init/004-attachments-schema.sql): deleting a
+	// vault item's row must also remove its attachments' metadata rows.
+	// Cleaning up the corresponding on-disk files is NOT this store's job
+	// (it only knows about the DB) -- that's handleDeleteVaultItem's
+	// explicit responsibility via deleteAttachmentsForItem, called before
+	// this method.
+	for id, a := range f.attachments {
+		if a.UserID == userID && a.VaultItemID == itemID {
+			delete(f.attachments, id)
+		}
+	}
+	return nil
+}
+
+// --- Sprint 5: attachments -------------------------------------------------
+
+func (f *fakeAuthStore) CreateAttachment(_ context.Context, userID, vaultItemID int64, encryptedFilename []byte, mimeType string, size int64, storagePath string) (store.Attachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, err := f.getItemLocked(userID, vaultItemID); err != nil {
+		return store.Attachment{}, err
+	}
+
+	f.nextID++
+	id := f.nextID
+	a := store.Attachment{
+		ID:                id,
+		UserID:            userID,
+		VaultItemID:       vaultItemID,
+		EncryptedFilename: encryptedFilename,
+		MimeType:          mimeType,
+		Size:              size,
+		StoragePath:       storagePath,
+		CreatedAt:         time.Now(),
+	}
+	f.attachments[id] = a
+	return a, nil
+}
+
+func (f *fakeAuthStore) GetAttachment(_ context.Context, userID, attachmentID int64) (store.Attachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	a, ok := f.attachments[attachmentID]
+	if !ok || a.UserID != userID {
+		return store.Attachment{}, store.ErrNotFound
+	}
+	return a, nil
+}
+
+func (f *fakeAuthStore) ListAttachmentsForItem(_ context.Context, userID, vaultItemID int64) ([]store.Attachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out []store.Attachment
+	for _, a := range f.attachments {
+		if a.UserID == userID && a.VaultItemID == vaultItemID {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (f *fakeAuthStore) DeleteAttachment(_ context.Context, userID, attachmentID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	a, ok := f.attachments[attachmentID]
+	if !ok || a.UserID != userID {
+		return store.ErrNotFound
+	}
+	delete(f.attachments, attachmentID)
 	return nil
 }
 
