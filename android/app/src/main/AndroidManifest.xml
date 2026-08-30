@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.VeilKeeper"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true">
 
         <!--
           android:allowBackup="false" is intentional: this app will hold a
@@ -14,6 +17,13 @@
           include Keystore-wrapped key material depending on OEM backup
           implementation) is disabled by default until Sprint 3 defines an
           explicit backup policy.
+
+          android:usesCleartextTraffic="true" is a Sprint 1 homelab-dev-only
+          concession: the backend has no TLS termination yet (SPEC-BASE.md
+          Section 30 explicitly scopes "HTTPS" to "non-local production
+          environments"). This must be revisited (removed, or scoped to a
+          dev-only build variant / network security config allowlisting only
+          the homelab's LAN range) before any real production deployment.
         -->
 
         <activity

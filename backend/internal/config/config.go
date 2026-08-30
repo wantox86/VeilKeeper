@@ -6,8 +6,11 @@
 package config
 
 import (
+	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -22,6 +25,25 @@ type Config struct {
 	ShutdownTimeout time.Duration
 
 	DB DBConfig
+
+	Auth AuthConfig
+}
+
+// AuthConfig holds Sprint 1 authentication settings.
+type AuthConfig struct {
+	// ServerPepper is a server-side secret used only to derive a
+	// deterministic *fake* KDF salt for /auth/prelogin anti-enumeration
+	// (see CLAUDE.md Resolved Design Decision #1). It is never used to
+	// derive or store any real cryptographic key material. It must NOT be
+	// logged.
+	ServerPepper []byte
+
+	// SessionTTL is how long a session token remains valid after login.
+	SessionTTL time.Duration
+
+	// RateLimit settings for auth endpoints (SPEC-BASE.md Section 30).
+	RateLimitRequestsPerWindow int
+	RateLimitWindow            time.Duration
 }
 
 // DBConfig holds MySQL connection settings.
@@ -41,7 +63,13 @@ type DBConfig struct {
 // defaults for local development. It does not fail on missing DB
 // credentials at load time -- connectivity is verified separately by
 // /ready, per SPEC-BASE.md Section 53/54.
-func Load() Config {
+//
+// logger is used only to warn about non-fatal misconfiguration (e.g. a
+// missing SERVER_PEPPER). It may be nil, in which case warnings are
+// silently skipped (used by tests).
+func Load(logger *slog.Logger) Config {
+	pepper := loadPepper(logger)
+
 	return Config{
 		HTTPPort:        getEnv("HTTP_PORT", "8080"),
 		ShutdownTimeout: 10 * time.Second,
@@ -55,7 +83,51 @@ func Load() Config {
 			MaxIdleConns:    5,
 			ConnMaxLifetime: 5 * time.Minute,
 		},
+		Auth: AuthConfig{
+			ServerPepper:               pepper,
+			SessionTTL:                 getEnvDuration("SESSION_TTL_HOURS", 720) * time.Hour,
+			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
+			RateLimitWindow:            time.Minute,
+		},
 	}
+}
+
+// loadPepper reads SERVER_PEPPER (expected: base64 or any opaque string, at
+// least 16 bytes) from the environment. If unset, it generates a random
+// ephemeral pepper for this process only and logs a warning -- acceptable
+// for a single-instance homelab dev deployment (see CLAUDE.md), but
+// production deployments should set SERVER_PEPPER explicitly so the
+// anti-enumeration fake-salt behavior stays stable across restarts. Never
+// logs the pepper value itself.
+func loadPepper(logger *slog.Logger) []byte {
+	if v := os.Getenv("SERVER_PEPPER"); v != "" {
+		return []byte(v)
+	}
+
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failing is fatal-grade, but Load() has no error
+		// return; panic here is acceptable since this only happens on a
+		// broken OS entropy source.
+		panic("config: failed to generate ephemeral SERVER_PEPPER: " + err.Error())
+	}
+	if logger != nil {
+		logger.Warn("SERVER_PEPPER not set; using an ephemeral random pepper for this process (set SERVER_PEPPER explicitly in production)")
+	}
+	return buf
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvDuration(key string, fallbackHours int) time.Duration {
+	return time.Duration(getEnvInt(key, fallbackHours))
 }
 
 // DSN builds a go-sql-driver/mysql compatible DSN. Never log the return

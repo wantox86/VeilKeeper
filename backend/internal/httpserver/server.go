@@ -10,6 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/wantox86/veilkeeper/backend/internal/auth"
+	"github.com/wantox86/veilkeeper/backend/internal/config"
+	"github.com/wantox86/veilkeeper/backend/internal/store"
 )
 
 // Pinger is satisfied by *sql.DB. Defined here (instead of importing
@@ -19,12 +23,39 @@ type Pinger interface {
 	PingContext(ctx context.Context) error
 }
 
-// NewMux builds the HTTP router for the API server.
-func NewMux(pinger Pinger, logger *slog.Logger) *http.ServeMux {
+// Account lockout tuning (SPEC-BASE.md Section 30/47): after 5 failed
+// attempts for the same email within 15 minutes, further attempts for that
+// email are rejected for 5 minutes. Applied uniformly regardless of whether
+// the email corresponds to a real account, so lockout behavior itself is
+// not an enumeration oracle.
+const (
+	accountLockoutMaxFailures = 5
+	accountLockoutWindow      = 15 * time.Minute
+	accountLockoutDuration    = 5 * time.Minute
+)
+
+// NewMux builds the HTTP router for the API server. authStore may be nil if
+// the caller only intends to exercise /health and /ready (as in this
+// package's own unit tests) -- the auth routes will panic if hit against a
+// nil store, but that's not exercised by those tests.
+func NewMux(pinger Pinger, authStore store.AuthStore, logger *slog.Logger, authCfg config.AuthConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /ready", handleReady(pinger, logger))
+
+	deps := &authDeps{
+		store:   authStore,
+		logger:  logger,
+		cfg:     authCfg,
+		lockout: auth.NewAccountLockout(accountLockoutMaxFailures, accountLockoutWindow, accountLockoutDuration),
+	}
+	ipLimiter := auth.NewIPLimiter(authCfg.RateLimitRequestsPerWindow, authCfg.RateLimitWindow)
+
+	mux.HandleFunc("POST /api/v1/auth/prelogin", rateLimited(ipLimiter, deps.handlePrelogin))
+	mux.HandleFunc("POST /api/v1/auth/register", rateLimited(ipLimiter, deps.handleRegister))
+	mux.HandleFunc("POST /api/v1/auth/login", rateLimited(ipLimiter, deps.handleLogin))
+	mux.HandleFunc("POST /api/v1/auth/logout", rateLimited(ipLimiter, deps.handleLogout))
 
 	return mux
 }

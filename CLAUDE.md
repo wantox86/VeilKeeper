@@ -161,4 +161,77 @@ Delivered:
 - `README.md` at repo root: quickstart, repo layout, local dev instructions for both backend and
   Android, CI overview.
 
-Not started: Sprint 1 (Authentication) onward — no auth/vault/encryption code exists yet.
+**Sprint 1 (Authentication) — complete.**
+
+Delivered:
+
+- Backend (`backend/internal/auth`, `internal/store`, `internal/httpserver`): `POST
+  /api/v1/auth/{prelogin,register,login,logout}` implementing the full CLAUDE.md Resolved Design
+  Decision #1 flow. `auth_key_hash` is Argon2id (`golang.org/x/crypto/argon2`, OWASP-minimum
+  params m=19MiB/t=2/p=1 — deliberately lighter than the client-side KDF params since the
+  server only ever hashes an already-high-entropy AuthKey, not a raw password; see doc comment
+  in `internal/auth/argon2id.go`). Session tokens are opaque 256-bit random values; only their
+  SHA-256 hash is stored (`sessions.token_hash`). `/auth/prelogin` anti-enumeration uses
+  `HMAC-SHA256(SERVER_PEPPER, email)` as a deterministic fake salt for nonexistent accounts;
+  login additionally burns comparable CPU time on a "user not found" path via a fixed dummy
+  Argon2id verify, so response timing doesn't leak account existence either. Rate limiting: a
+  minimal in-memory per-IP sliding window (`internal/auth/ratelimit.go`, `IPLimiter`) on all
+  `/api/v1/auth/*` routes, plus a per-email account lockout (5 failures / 15 min window → 5 min
+  lockout) applied identically regardless of whether the email is a real account.
+  **Deliberate deviation from CLAUDE.md's literal wording**: CLAUDE.md says the server
+  "generates kdf_salt ... at account creation," but that's a chicken-and-egg problem for a
+  single-round-trip `/register` call (the client needs the salt *before* it can derive AuthKey to
+  send). Since `kdf_salt` isn't secret, the **client generates it** (CSPRNG) and sends it
+  alongside `kdf_params`/`kdf_version`/`auth_key`/`wrapped_vdk` in one call; the server validates
+  `kdf_params` are within a sane range and stores everything verbatim. Documented in detail in
+  `handleRegister`'s doc comment (`backend/internal/httpserver/auth_handlers.go`). Migration:
+  `infra/mysql/init/002-auth-schema.sql` (`users`/`devices`/`sessions`, matching SPEC-BASE.md
+  Section 31 with the kdf_salt/kdf_params/kdf_version/wrapped_vdk/auth_key_hash fields CLAUDE.md
+  requires). New env vars (see `.env.example`): `SERVER_PEPPER`, `SESSION_TTL_HOURS`,
+  `AUTH_RATE_LIMIT_REQUESTS`. Unit tests (auth package + httpserver package, using an in-memory
+  fake `store.AuthStore` — no MySQL needed) cover: hash round-trip, wrong-key rejection, unique
+  salts per hash, KDF param validation, fake-salt determinism/uniqueness, rate limiter and
+  account lockout behavior, and all four handlers including duplicate-email/wrong-auth-key/
+  locked-account/idempotent-logout paths. `go test -race -cover ./...`: 44 tests, all passing.
+  Manually verified end-to-end against a fresh `docker compose up -d` (register → prelogin →
+  duplicate-register(409) → login(wrong key, 401) → login(correct) → logout → logout again
+  (idempotent 204) via `curl`), confirmed via direct MySQL query that `auth_key_hash` is an
+  Argon2id string (never the raw key), `wrapped_vdk` is opaque ciphertext, and `sessions.token_hash`
+  is a hash (never the raw bearer token) — then `docker compose down -v` to tear down. `docker ps`
+  reconfirmed zero collision with the Qoder build throughout.
+- Android (`android/app/.../crypto`, `.../data`, `.../ui/auth`): real Login and Register screens
+  (SPEC-BASE.md Section 18.1/18.2) wired to actual client-side crypto and the backend API —
+  **not** a mock/stub. Key hierarchy exactly per CLAUDE.md Decision #1: Argon2id
+  (`com.lambdapioneer.argon2kt:argon2kt` — an Android-specific JNI binding shipping prebuilt
+  native libs; chosen because Argon2id has no JDK/Android-stdlib equivalent, unlike HKDF and
+  AES-GCM below) → MasterKey → HKDF-SHA256 (hand-rolled RFC 5869 over stdlib
+  `javax.crypto.Mac`, no extra dependency needed) → AuthKey/WrapKey → AES-256-GCM
+  (`javax.crypto.Cipher`, stdlib) wrap/unwrap of a randomly-generated VaultDataKey. Retrofit +
+  OkHttp + kotlinx.serialization for the network layer; Register screen shows the mandatory
+  "no password recovery" disclosure (CLAUDE.md Decision #2) as a dedicated notice card, not fine
+  print. Session token + unwrapped VDK are held in-memory only (`AuthSessionHolder`) — no disk
+  persistence yet, since the Keystore-backed encrypted cache is explicitly Sprint 3 scope
+  (Decision #3); this is a disclosed Sprint 1 simplification, not an oversight.
+  **Known, disclosed testing limitation**: Argon2Kt's native `.so` libraries target Android
+  device/emulator ABIs and cannot load in a plain host-JVM process — so the *real* Argon2id call
+  (`Argon2idMasterKeyDeriver`) cannot run under `testDebugUnitTest` (which is also all that
+  `android.yml` CI actually runs; no emulator step exists there, and none was available in this
+  sprint's implementation environment either). To keep everything else genuinely unit-tested on
+  the host JVM, `VaultCrypto` depends on a `MasterKeyDeriver` interface; tests substitute a
+  deterministic `FakeMasterKeyDeriver` (real HKDF + real AES-GCM still exercised end-to-end). An
+  instrumented test for the real Argon2id path exists
+  (`androidTest/.../Argon2idMasterKeyDeriverInstrumentedTest.kt`) but could not be run here and
+  should be run manually (`./gradlew connectedAndroidTest`) on a real device/emulator before this
+  ships to end users. Unit tests added: `HkdfTest` (validated against a real RFC 5869 SHA-256
+  test vector, not just self-consistency), `AesGcmTest` (SPEC-BASE.md Section 47 round-trip +
+  unique-nonce-per-call + tamper/wrong-key detection), `VaultCryptoTest` (full key-hierarchy
+  round trip with the fake KDF), `AuthRepositoryTest` and `LoginViewModelTest`/
+  `RegisterViewModelTest` (against a fake `AuthApi`, covering success/401/409/429 paths).
+  `./gradlew assembleDebug testDebugUnitTest lintDebug`: all green (34 unit tests passing, 0
+  lint errors, pre-existing/unrelated lint warnings only e.g. obsolete BOM version from Sprint 0).
+  Android SDK/build-tools were not pre-installed in this sprint's sandbox; installed via
+  `brew install --cask android-commandlinetools` + `sdkmanager` to actually run these checks
+  locally rather than only trusting CI.
+- `.env.example` and this file both updated for the new auth-related config/state.
+
+Not started: Sprint 2 (Vault Foundation) onward.

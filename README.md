@@ -8,8 +8,9 @@ manager). Client-side (zero-knowledge) encrypted vault items, Go backend, MySQL,
 > implementation of the same spec ("Veil Keepers"). See [`CLAUDE.md`](./CLAUDE.md) for
 > resolved design decisions and current sprint status.
 
-**Status:** Sprint 0 (Project Bootstrap) complete. No auth/vault features exist yet — see
-[`CLAUDE.md`](./CLAUDE.md#current-state).
+**Status:** Sprint 1 (Authentication) complete — register/login/logout with client-side
+Argon2id/HKDF/AES-256-GCM crypto on Android and Argon2id-hashed sessions on the backend. No
+vault/attachment features yet — see [`CLAUDE.md`](./CLAUDE.md#current-state).
 
 ## Repository structure
 
@@ -57,8 +58,10 @@ cd android
 ./gradlew lintDebug
 ```
 
-The app currently only has a bootstrap screen proving Compose/Material 3 render correctly —
-no login/vault UI yet (that's Sprint 1+).
+The app has working Login/Register screens wired to real client-side crypto (Argon2id via
+Argon2Kt, HKDF, AES-256-GCM) and the backend auth API. See `CLAUDE.md`'s Current State entry for
+Sprint 1 for a disclosed limitation: the real Argon2id path can only be exercised by an
+instrumented test on a device/emulator, not by `testDebugUnitTest`/CI.
 
 ## Configuration
 

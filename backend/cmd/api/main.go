@@ -13,12 +13,13 @@ import (
 	"github.com/wantox86/veilkeeper/backend/internal/config"
 	"github.com/wantox86/veilkeeper/backend/internal/db"
 	"github.com/wantox86/veilkeeper/backend/internal/httpserver"
+	"github.com/wantox86/veilkeeper/backend/internal/store"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg := config.Load()
+	cfg := config.Load(logger)
 
 	database, err := db.Open(cfg.DB)
 	if err != nil {
@@ -27,7 +28,8 @@ func main() {
 	}
 	defer database.Close()
 
-	mux := httpserver.NewMux(database, logger)
+	authStore := store.NewMySQLStore(database)
+	mux := httpserver.NewMux(database, authStore, logger, cfg.Auth)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,

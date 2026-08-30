@@ -9,7 +9,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/wantox86/veilkeeper/backend/internal/config"
 )
+
+// testAuthConfig returns a minimal AuthConfig suitable for tests that don't
+// exercise the auth routes directly (health/ready tests only need NewMux to
+// construct without panicking).
+func testAuthConfig() config.AuthConfig {
+	return config.AuthConfig{
+		ServerPepper:               []byte("test-pepper-not-a-real-secret"),
+		SessionTTL:                 24 * time.Hour,
+		RateLimitRequestsPerWindow: 1000,
+		RateLimitWindow:            time.Minute,
+	}
+}
 
 // fakePinger lets us unit-test the readiness handler without a real MySQL
 // instance.
@@ -35,7 +50,7 @@ func decodeStatus(t *testing.T, body io.Reader) statusResponse {
 }
 
 func TestHandleHealth(t *testing.T) {
-	mux := NewMux(fakePinger{}, discardLogger())
+	mux := NewMux(fakePinger{}, nil, discardLogger(), testAuthConfig())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -50,7 +65,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleReady_DatabaseUp(t *testing.T) {
-	mux := NewMux(fakePinger{err: nil}, discardLogger())
+	mux := NewMux(fakePinger{err: nil}, nil, discardLogger(), testAuthConfig())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -65,7 +80,7 @@ func TestHandleReady_DatabaseUp(t *testing.T) {
 }
 
 func TestHandleReady_DatabaseDown(t *testing.T) {
-	mux := NewMux(fakePinger{err: errors.New("connection refused")}, discardLogger())
+	mux := NewMux(fakePinger{err: errors.New("connection refused")}, nil, discardLogger(), testAuthConfig())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -80,7 +95,7 @@ func TestHandleReady_DatabaseDown(t *testing.T) {
 }
 
 func TestHandleReady_ErrorNotLeaked(t *testing.T) {
-	mux := NewMux(fakePinger{err: errors.New("secret internal detail: dsn=user:pass@tcp(...)")}, discardLogger())
+	mux := NewMux(fakePinger{err: errors.New("secret internal detail: dsn=user:pass@tcp(...)")}, nil, discardLogger(), testAuthConfig())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
