@@ -33,19 +33,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import id.quezacolt.veilkeeper.VeilKeeperApplication
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 
 /**
  * Vault Detail screen (SPEC-BASE.md Section 20): a secure-notebook-style
  * list of content blocks. Secrets are hidden by default (Section 22) and
- * revealed per-block; copy uses the platform clipboard (auto-clear timer is
- * Sprint 3 "Clipboard Security" scope, SPEC-BASE.md Section 23 -- not built
- * here to avoid scope creep beyond Sprint 2's "Vault Foundation").
+ * revealed per-block; copy uses [id.quezacolt.veilkeeper.data.ClipboardSecurity]
+ * (Sprint 3, SPEC-BASE.md Section 23) rather than the raw platform clipboard
+ * -- marks the clip sensitive where the OS supports it and auto-clears it
+ * after the user-configured delay (Settings screen).
  */
 @Composable
 fun VaultDetailScreen(
@@ -97,7 +98,8 @@ fun VaultDetailScreen(
 
 @Composable
 private fun ContentBlockCard(block: ContentBlockDto) {
-    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val app = context.applicationContext as VeilKeeperApplication
     var revealed by remember(block) { mutableStateOf(false) }
     val isSecret = block.type == "secret"
 
@@ -120,7 +122,20 @@ private fun ContentBlockCard(block: ContentBlockDto) {
                         )
                     }
                 }
-                IconButton(onClick = { clipboard.setText(AnnotatedString(block.value)) }) {
+                IconButton(
+                    onClick = {
+                        // SPEC-BASE.md Section 23: every copy from this screen is
+                        // treated as sensitive (secret AND non-secret text blocks
+                        // alike live in a zero-knowledge vault), so it always goes
+                        // through the auto-clear path, not just for `isSecret`.
+                        val delayMillis = app.settingsRepository.clipboardClearDelay.value.millis
+                        app.clipboardSecurity.copyAndScheduleClear(
+                            label = block.label ?: "VeilKeeper",
+                            value = block.value,
+                            clearAfterMillis = delayMillis,
+                        )
+                    },
+                ) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "Copy")
                 }
             }

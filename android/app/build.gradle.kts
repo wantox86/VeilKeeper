@@ -14,7 +14,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0-sprint1"
+        versionName = "0.1.0-sprint3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -58,7 +58,14 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    // Sprint 3: AutoLockManager observes whole-app foreground/background via
+    // ProcessLifecycleOwner (SPEC-BASE.md Section 24), not per-Activity.
+    implementation("androidx.lifecycle:lifecycle-process:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
+    // Sprint 3: BiometricPrompt (SPEC-BASE.md Section 25) requires a
+    // FragmentActivity host, hence the androidx.fragment dependency too.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.4")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")

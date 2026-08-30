@@ -2,44 +2,60 @@ package id.quezacolt.veilkeeper
 
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.fragment.app.FragmentActivity
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import id.quezacolt.veilkeeper.data.AuthRepository
+import id.quezacolt.veilkeeper.data.AuthSessionHolder
 import id.quezacolt.veilkeeper.data.DeviceIdentity
 import id.quezacolt.veilkeeper.data.NetworkModule
+import id.quezacolt.veilkeeper.data.VaultLockState
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.crypto.Argon2idMasterKeyDeriver
 import id.quezacolt.veilkeeper.crypto.VaultCrypto
 import id.quezacolt.veilkeeper.ui.auth.AuthViewModelFactory
 import id.quezacolt.veilkeeper.ui.auth.LoginScreen
 import id.quezacolt.veilkeeper.ui.auth.RegisterScreen
+import id.quezacolt.veilkeeper.ui.auth.UnlockScreen
 import id.quezacolt.veilkeeper.ui.category.CategoryScreen
 import id.quezacolt.veilkeeper.ui.home.HomeScreen
 import id.quezacolt.veilkeeper.ui.home.VaultViewModelFactory
+import id.quezacolt.veilkeeper.ui.settings.SettingsScreen
+import id.quezacolt.veilkeeper.ui.settings.SettingsViewModelFactory
 import id.quezacolt.veilkeeper.ui.theme.VeilKeeperTheme
 import id.quezacolt.veilkeeper.ui.vault.AddItemScreen
 import id.quezacolt.veilkeeper.ui.vault.VaultDetailScreen
 
 private const val ROUTE_LOGIN = "login"
 private const val ROUTE_REGISTER = "register"
+private const val ROUTE_UNLOCK = "unlock"
 private const val ROUTE_HOME = "home"
+private const val ROUTE_SETTINGS = "settings"
 private const val ARG_CATEGORY_ID = "categoryId"
 private const val ARG_ITEM_ID = "itemId"
 private const val ROUTE_CATEGORY = "category/{$ARG_CATEGORY_ID}"
 private const val ROUTE_ITEM_DETAIL = "item/{$ARG_ITEM_ID}"
 private const val ROUTE_ADD_ITEM = "add-item/{$ARG_CATEGORY_ID}"
 
-class MainActivity : ComponentActivity() {
+/**
+ * `FragmentActivity` (not plain `ComponentActivity`) since Sprint 3's
+ * biometric unlock (SPEC-BASE.md Section 25) needs `BiometricPrompt`, which
+ * requires a `FragmentActivity` host. Compose interop (`setContent`, etc.)
+ * is unaffected -- `FragmentActivity` extends `ComponentActivity`.
+ */
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -52,16 +68,23 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
 
+        val app = application as VeilKeeperApplication
         val vaultCrypto = VaultCrypto(Argon2idMasterKeyDeriver())
         val authRepository = AuthRepository(NetworkModule.authApi, vaultCrypto)
         val vaultRepository = VaultRepository(NetworkModule.vaultApi)
         val deviceIdentifier = DeviceIdentity.getOrCreate(applicationContext)
         val authViewModelFactory = AuthViewModelFactory(authRepository, deviceIdentifier)
+        val settingsViewModelFactory = SettingsViewModelFactory.create(
+            settingsRepository = app.settingsRepository,
+            biometricManager = app.vaultBiometricManager,
+            authRepository = authRepository,
+            biometricAvailableOnDevice = app.vaultBiometricManager.isAvailable(this),
+        )
 
         setContent {
             VeilKeeperTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    VeilKeeperApp(authViewModelFactory, vaultRepository)
+                    VeilKeeperApp(authViewModelFactory, settingsViewModelFactory, vaultRepository)
                 }
             }
         }
@@ -69,8 +92,29 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun VeilKeeperApp(authFactory: AuthViewModelFactory, vaultRepository: VaultRepository) {
+fun VeilKeeperApp(
+    authFactory: AuthViewModelFactory,
+    settingsFactory: androidx.lifecycle.ViewModelProvider.Factory,
+    vaultRepository: VaultRepository,
+) {
     val navController = rememberNavController()
+
+    // Sprint 3 (SPEC-BASE.md Section 24): react to auto-lock/unlock/logout
+    // globally, from wherever the user happens to be in the app, rather than
+    // each screen wiring this itself. AuthSessionHolder.lock() (called by
+    // AutoLockManager on background/timeout/screen-off) is the single source
+    // of truth for this.
+    val lockState by AuthSessionHolder.lockState.collectAsState()
+    LaunchedEffect(lockState) {
+        val current = navController.currentDestination?.route
+        when (lockState) {
+            VaultLockState.LOCKED -> if (current != ROUTE_UNLOCK) navController.navigate(ROUTE_UNLOCK)
+            VaultLockState.UNLOCKED -> if (current == ROUTE_UNLOCK) navController.popBackStack()
+            VaultLockState.LOGGED_OUT -> if (current != ROUTE_LOGIN && current != ROUTE_REGISTER) {
+                navController.navigate(ROUTE_LOGIN) { popUpTo(0) { inclusive = true } }
+            }
+        }
+    }
 
     NavHost(navController = navController, startDestination = ROUTE_LOGIN) {
         composable(ROUTE_LOGIN) {
@@ -87,6 +131,9 @@ fun VeilKeeperApp(authFactory: AuthViewModelFactory, vaultRepository: VaultRepos
                 onNavigateToLogin = { navController.popBackStack() },
             )
         }
+        composable(ROUTE_UNLOCK) {
+            UnlockScreen(factory = authFactory)
+        }
         composable(ROUTE_HOME) {
             HomeScreen(
                 factory = VaultViewModelFactory.home(vaultRepository),
@@ -99,6 +146,13 @@ fun VeilKeeperApp(authFactory: AuthViewModelFactory, vaultRepository: VaultRepos
                     // one category exists (see defaultCategoryId there).
                     navController.navigate("add-item/$defaultCategoryId")
                 },
+                onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
+            )
+        }
+        composable(ROUTE_SETTINGS) {
+            SettingsScreen(
+                factory = settingsFactory,
+                onBack = { navController.popBackStack() },
             )
         }
         composable(

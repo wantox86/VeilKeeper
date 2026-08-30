@@ -16,6 +16,7 @@ class AuthViewModelFactory(
     override fun <T : ViewModel> create(modelClass: Class<T>): T = when (modelClass) {
         LoginViewModel::class.java -> LoginViewModel(repository, deviceIdentifier) as T
         RegisterViewModel::class.java -> RegisterViewModel(repository) as T
+        UnlockViewModel::class.java -> UnlockViewModel(repository) as T
         else -> throw IllegalArgumentException("Unknown ViewModel class: $modelClass")
     }
 }

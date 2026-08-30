@@ -1,6 +1,7 @@
 package id.quezacolt.veilkeeper.data
 
 import id.quezacolt.veilkeeper.crypto.FakeMasterKeyDeriver
+import id.quezacolt.veilkeeper.crypto.KdfParams
 import id.quezacolt.veilkeeper.crypto.VaultCrypto
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -129,5 +130,61 @@ class AuthRepositoryTest {
 
     private fun assertArrayEqualsCustom(expected: ByteArray, actual: ByteArray) {
         org.junit.Assert.assertArrayEquals(expected, actual)
+    }
+
+    // --- Sprint 3 (SPEC-BASE.md Section 24): offline password unlock ---
+
+    @Test
+    fun `unlockWithPassword re-derives and restores the same VDK without any network call`() = runTest {
+        val vaultCrypto = VaultCrypto(FakeMasterKeyDeriver())
+        val salt = vaultCrypto.generateKdfSalt()
+        val password = "correct horse battery staple".toCharArray()
+        val masterKey = vaultCrypto.deriveMasterKey(String(password).toByteArray(), salt, KdfParams.DEFAULT)
+        val wrapKey = vaultCrypto.deriveWrapKey(masterKey)
+        val vdk = vaultCrypto.generateVaultDataKey()
+        val wrappedVdk = vaultCrypto.wrapVaultDataKey(vdk, wrapKey)
+
+        AuthSessionHolder.set(
+            sessionToken = "token-1",
+            vaultDataKey = ByteArray(32), // arbitrary -- about to be locked
+            unwrapMaterial = VdkUnwrapMaterial(salt, KdfParams.DEFAULT, wrappedVdk),
+        )
+        AuthSessionHolder.lock()
+
+        val result = repository.unlockWithPassword(password)
+
+        assertTrue(result.isSuccess)
+        assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+        assertArrayEqualsCustom(vdk, AuthSessionHolder.vaultDataKey!!)
+        // FakeAuthApi must not have been touched -- no network round trip.
+        org.junit.Assert.assertNull(api.lastLoginRequest)
+    }
+
+    @Test
+    fun `unlockWithPassword with the wrong password fails and leaves the vault locked`() = runTest {
+        val vaultCrypto = VaultCrypto(FakeMasterKeyDeriver())
+        val salt = vaultCrypto.generateKdfSalt()
+        val masterKey = vaultCrypto.deriveMasterKey("right-password".toByteArray(), salt, KdfParams.DEFAULT)
+        val wrapKey = vaultCrypto.deriveWrapKey(masterKey)
+        val vdk = vaultCrypto.generateVaultDataKey()
+        val wrappedVdk = vaultCrypto.wrapVaultDataKey(vdk, wrapKey)
+
+        AuthSessionHolder.set("token-1", ByteArray(32), VdkUnwrapMaterial(salt, KdfParams.DEFAULT, wrappedVdk))
+        AuthSessionHolder.lock()
+
+        val result = repository.unlockWithPassword("wrong-password".toCharArray())
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is AuthRepository.AuthError.InvalidCredentials)
+        assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+    }
+
+    @Test
+    fun `unlockWithPassword fails cleanly when there is no active session`() = runTest {
+        AuthSessionHolder.clear()
+
+        val result = repository.unlockWithPassword("whatever".toCharArray())
+
+        assertTrue(result.isFailure)
     }
 }

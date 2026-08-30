@@ -131,8 +131,17 @@ class AuthRepository(
                 }
 
                 val body = response.body() ?: return@withContext Result.failure(AuthError.ServerError("empty login response"))
-                vdk = vaultCrypto.unwrapVaultDataKey(body.wrappedVdk.fromB64(), wrapKey)
-                AuthSessionHolder.set(sessionToken = body.sessionToken, vaultDataKey = vdk)
+                val wrappedVdkBytes = body.wrappedVdk.fromB64()
+                vdk = vaultCrypto.unwrapVaultDataKey(wrappedVdkBytes, wrapKey)
+                AuthSessionHolder.set(
+                    sessionToken = body.sessionToken,
+                    vaultDataKey = vdk,
+                    // Sprint 3: kept so a later auto-lock (SPEC-BASE.md Section 24)
+                    // can be undone by password entry without a network call --
+                    // see AuthSessionHolder's VdkUnwrapMaterial doc comment.
+                    unwrapMaterial = VdkUnwrapMaterial(kdfSalt = kdfSalt, kdfParams = params, wrappedVdk = wrappedVdkBytes),
+                    email = email.trim(),
+                )
                 vdk = null // ownership transferred to AuthSessionHolder; don't wipe it below
 
                 Result.success(Unit)
@@ -144,6 +153,37 @@ class AuthRepository(
                 VaultCrypto.wipe(passwordBytes, masterKey, authKey, wrapKey, vdk)
             }
         }
+
+    /**
+     * Sprint 3 (SPEC-BASE.md Section 24 "Auto Lock" + Section 25 "Biometric
+     * Unlock"): re-derives WrapKey from [password] and the [VdkUnwrapMaterial]
+     * cached at login, and unwraps the *same* VDK -- entirely offline, no
+     * network call, no fresh session. Fails with [AuthError.InvalidCredentials]
+     * if the wrong password is supplied (AES-GCM tag mismatch) or there is no
+     * active session/unwrap material to unlock (e.g. after a full logout or
+     * app restart).
+     */
+    suspend fun unlockWithPassword(password: CharArray): Result<Unit> = withContext(computeDispatcher) {
+        val material = AuthSessionHolder.unwrapMaterial
+            ?: return@withContext Result.failure(AuthError.ServerError("no active session to unlock"))
+        val passwordBytes = password.toUtf8Bytes()
+
+        var masterKey: ByteArray? = null
+        var wrapKey: ByteArray? = null
+        var vdk: ByteArray? = null
+        try {
+            masterKey = vaultCrypto.deriveMasterKey(passwordBytes, material.kdfSalt, material.kdfParams)
+            wrapKey = vaultCrypto.deriveWrapKey(masterKey)
+            vdk = vaultCrypto.unwrapVaultDataKey(material.wrappedVdk, wrapKey)
+            AuthSessionHolder.unlock(vdk)
+            vdk = null // ownership transferred
+            Result.success(Unit)
+        } catch (e: java.security.GeneralSecurityException) {
+            Result.failure(AuthError.InvalidCredentials("wrong password"))
+        } finally {
+            VaultCrypto.wipe(passwordBytes, masterKey, wrapKey, vdk)
+        }
+    }
 
     /** Revokes the current session. Idempotent (matches backend logout semantics). */
     suspend fun logout(): Result<Unit> = withContext(ioDispatcher) {
