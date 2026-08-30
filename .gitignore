@@ -1,0 +1,22 @@
+.env
+
+# Go
+/backend/veilkeeper-api
+/backend/*.test
+
+# Android / Gradle
+android/.gradle/
+android/local.properties
+android/.idea/
+android/*.iml
+android/app/build/
+android/build/
+android/captures/
+android/.cxx/
+
+# Data (local dev only, not app source)
+/data/attachments/*
+!/data/attachments/.gitkeep
+
+# OS
+.DS_Store

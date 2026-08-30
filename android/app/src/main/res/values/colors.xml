@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sprint 0 placeholder brand color (dark, calm). Real palette lands
+         in the Phase 6 UI polish pass. -->
+    <color name="ic_launcher_background">#111318</color>
+</resources>

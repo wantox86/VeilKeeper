@@ -123,4 +123,47 @@ collides, in case the Qoder build's naming changes between sprints.
 
 ## Current State
 
-Not started yet — Sprint 0 (Project Bootstrap) is about to begin.
+**Sprint 0 (Project Bootstrap) — complete.**
+
+Delivered:
+
+- Repo structure: `backend/` (Go), `android/` (Kotlin/Compose), `infra/mysql/init/` (MySQL init
+  scripts), `data/attachments/` (bind-mount target), `docs/` (empty, for later sprints),
+  `.github/workflows/`.
+- Go backend skeleton (`backend/cmd/api`, `internal/config`, `internal/db`,
+  `internal/httpserver`): stdlib `net/http` + Go 1.22+ method-pattern `ServeMux`, no framework.
+  Only dependency: `github.com/go-sql-driver/mysql`. `GET /health` (pure liveness) and
+  `GET /ready` (checks MySQL reachability via `PingContext`, returns 503 if down, per
+  SPEC-BASE.md Section 54). Unit tests cover both, including a test asserting `/ready` never
+  leaks internal error details in the response body.
+- Android skeleton (`android/app`): Kotlin + Jetpack Compose + Material 3, package
+  `id.quezacolt.veilkeeper`, minSdk 26 / targetSdk 35 / compileSdk 35, AGP 8.6.1, Kotlin 2.0.21.
+  Single bootstrap screen (no login/vault UI yet). Gradle wrapper (8.9) generated and committed.
+  `android:allowBackup="false"` set intentionally (zero-knowledge vault, revisit with an
+  explicit backup policy in a later sprint).
+- Docker Compose (`docker-compose.yml` at repo root, `name: veilkeeper`): `api` (built from
+  `backend/Dockerfile`, multi-stage Go build → non-root Alpine runtime, host port **18091**) +
+  `mysql` (8.4, no host port published, healthcheck-gated). Verified end-to-end: fresh
+  `docker compose up -d` succeeds, `/health` and `/ready` both respond correctly, `docker ps`
+  confirms zero collision with the Qoder build's `vk-sprint3-veilkeepers-api-1` (port 18080) /
+  `vk-sprint3-veilkeepers-mysql-1` (both stacks ran simultaneously during verification), and
+  `docker compose down -v` cleans up fully.
+- `.env.example` at repo root with placeholder values only; real `.env` is gitignored.
+- GitHub Actions: `backend.yml` (gofmt check, `go vet`, `go test -race -cover`, `go build`,
+  Docker image build), `android.yml` (Gradle `assembleDebug`, `testDebugUnitTest`, `lintDebug`,
+  APK artifact upload), `security.yml` (gitleaks secret scanning + `govulncheck`). Not yet
+  confirmed green on GitHub itself (see note below) — locally, all equivalent commands
+  (`gofmt`, `go vet`, `go test`, `go build`, `docker build`, and the full Android Gradle build
+  including `assembleDebug`/`testDebugUnitTest`/`lintDebug` via a locally-provisioned SDK) were
+  run and pass.
+- `README.md` at repo root: quickstart, repo layout, local dev instructions for both backend and
+  Android, CI overview.
+
+**Note for next session/sprint**: push to `main` and the first live GitHub Actions run were
+expected to happen right after this Sprint 0 work — check the Actions tab / `gh run list` to
+confirm the workflows are actually green on GitHub's runners (local verification is thorough but
+GitHub-hosted Android SDK provisioning via `android-actions/setup-android` was not itself
+exercised locally, only a manually-provisioned local SDK was used to validate the Gradle build
+logic).
+
+Not started: Sprint 1 (Authentication) onward — no auth/vault/encryption code exists yet.

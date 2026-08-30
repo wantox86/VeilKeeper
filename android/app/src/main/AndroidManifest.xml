@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.VeilKeeper"
+        android:supportsRtl="true">
+
+        <!--
+          android:allowBackup="false" is intentional: this app will hold a
+          zero-knowledge-encrypted vault. Auto-backup of app data (which can
+          include Keystore-wrapped key material depending on OEM backup
+          implementation) is disabled by default until Sprint 3 defines an
+          explicit backup policy.
+        -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.VeilKeeper">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

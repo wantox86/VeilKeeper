@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sprint 0: a minimal Material3-DayNight base theme. Compose supplies
+         the actual Material 3 theming (colors/typography) at runtime;
+         the real UI/UX pass is Phase 6, per SPEC-BASE.md Section 27/57. -->
+    <style name="Theme.VeilKeeper" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

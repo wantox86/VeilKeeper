@@ -1,0 +1,63 @@
+# VeilKeeper local/homelab Docker Compose.
+#
+# IMPORTANT: this project shares a Docker host (MACMINI) with an unrelated
+# parallel implementation of the same spec ("Veil Keepers", built with
+# Qoder+Kimi K3, compose project `vk-sprint3`). The explicit `name:` below
+# and the non-default host port keep the two stacks from colliding. Do not
+# rename these without checking `docker ps` first.
+name: veilkeeper
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: veilkeeper-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HTTP_PORT: "8080"
+      DB_HOST: mysql
+      DB_PORT: "3306"
+    ports:
+      # Host port 18091 -- NOT 18080, which is already used by the Qoder
+      # build's `vk-sprint3-veilkeepers-api-1` container on this same host.
+      - "18091:8080"
+    volumes:
+      - ./data/attachments:/data/attachments
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mysql:
+    image: mysql:8.4
+    container_name: veilkeeper-mysql
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_DATABASE: "${DB_NAME}"
+      MYSQL_USER: "${DB_USER}"
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
+    # No host port published -- internal-only, matching the good practice
+    # the Qoder build already follows on this same host.
+    volumes:
+      - veilkeeper-mysql-data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  veilkeeper-mysql-data:
