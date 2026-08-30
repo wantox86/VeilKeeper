@@ -17,11 +17,14 @@ object NetworkModule {
         encodeDefaults = true
     }
 
-    val authApi: AuthApi by lazy {
+    private val retrofit: Retrofit by lazy {
         Retrofit.Builder()
             .baseUrl(BuildConfig.API_BASE_URL)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
-            .create(AuthApi::class.java)
     }
+
+    val authApi: AuthApi by lazy { retrofit.create(AuthApi::class.java) }
+
+    val vaultApi: VaultApi by lazy { retrofit.create(VaultApi::class.java) }
 }

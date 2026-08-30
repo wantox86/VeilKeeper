@@ -34,18 +34,18 @@ const (
 	accountLockoutDuration    = 5 * time.Minute
 )
 
-// NewMux builds the HTTP router for the API server. authStore may be nil if
-// the caller only intends to exercise /health and /ready (as in this
-// package's own unit tests) -- the auth routes will panic if hit against a
-// nil store, but that's not exercised by those tests.
-func NewMux(pinger Pinger, authStore store.AuthStore, logger *slog.Logger, authCfg config.AuthConfig) *http.ServeMux {
+// NewMux builds the HTTP router for the API server. st may be nil if the
+// caller only intends to exercise /health and /ready (as in this package's
+// own unit tests) -- the auth/vault routes will panic if hit against a nil
+// store, but that's not exercised by those tests.
+func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /ready", handleReady(pinger, logger))
 
 	deps := &authDeps{
-		store:   authStore,
+		store:   st,
 		logger:  logger,
 		cfg:     authCfg,
 		lockout: auth.NewAccountLockout(accountLockoutMaxFailures, accountLockoutWindow, accountLockoutDuration),
@@ -56,6 +56,23 @@ func NewMux(pinger Pinger, authStore store.AuthStore, logger *slog.Logger, authC
 	mux.HandleFunc("POST /api/v1/auth/register", rateLimited(ipLimiter, deps.handleRegister))
 	mux.HandleFunc("POST /api/v1/auth/login", rateLimited(ipLimiter, deps.handleLogin))
 	mux.HandleFunc("POST /api/v1/auth/logout", rateLimited(ipLimiter, deps.handleLogout))
+
+	// Sprint 2: vault foundation routes. All require a valid bearer session
+	// (requireSession), which injects the authenticated user ID used for
+	// ownership scoping in every store call these handlers make.
+	vDeps := &vaultDeps{store: st, logger: logger}
+	withAuth := func(h http.HandlerFunc) http.HandlerFunc { return requireSession(st, logger, nil, h) }
+
+	mux.HandleFunc("GET /api/v1/categories", withAuth(vDeps.handleListCategories))
+	mux.HandleFunc("POST /api/v1/categories", withAuth(vDeps.handleCreateCategory))
+	mux.HandleFunc("PUT /api/v1/categories/{id}", withAuth(vDeps.handleRenameCategory))
+	mux.HandleFunc("DELETE /api/v1/categories/{id}", withAuth(vDeps.handleDeleteCategory))
+
+	mux.HandleFunc("GET /api/v1/vault/items", withAuth(vDeps.handleListVaultItems))
+	mux.HandleFunc("POST /api/v1/vault/items", withAuth(vDeps.handleCreateVaultItem))
+	mux.HandleFunc("GET /api/v1/vault/items/{id}", withAuth(vDeps.handleGetVaultItem))
+	mux.HandleFunc("PUT /api/v1/vault/items/{id}", withAuth(vDeps.handleUpdateVaultItem))
+	mux.HandleFunc("DELETE /api/v1/vault/items/{id}", withAuth(vDeps.handleDeleteVaultItem))
 
 	return mux
 }

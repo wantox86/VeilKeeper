@@ -148,3 +148,285 @@ func nullableString(s string) sql.NullString {
 	}
 	return sql.NullString{String: s, Valid: true}
 }
+
+// --- Sprint 2: categories -----------------------------------------------
+
+func (s *MySQLStore) CreateDefaultCategories(ctx context.Context, userID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: create default categories: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO categories (user_id, name) VALUES (?, ?)`)
+	if err != nil {
+		return fmt.Errorf("store: create default categories: prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, name := range DefaultCategoryNames {
+		if _, err := stmt.ExecContext(ctx, userID, name); err != nil {
+			return fmt.Errorf("store: create default categories: insert %q: %w", name, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *MySQLStore) ListCategories(ctx context.Context, userID int64) ([]Category, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.user_id, c.name, c.is_uncategorized, c.created_at, c.updated_at,
+		       COUNT(v.id) AS item_count
+		FROM categories c
+		LEFT JOIN vault_items v ON v.category_id = c.id AND v.user_id = c.user_id
+		WHERE c.user_id = ?
+		GROUP BY c.id, c.user_id, c.name, c.is_uncategorized, c.created_at, c.updated_at
+		ORDER BY c.id ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list categories: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Category
+	for rows.Next() {
+		var c Category
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Name, &c.IsUncategorized, &c.CreatedAt, &c.UpdatedAt, &c.ItemCount); err != nil {
+			return nil, fmt.Errorf("store: list categories: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list categories: rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MySQLStore) GetCategory(ctx context.Context, userID, categoryID int64) (Category, error) {
+	return getCategoryTx(ctx, s.db, userID, categoryID)
+}
+
+// querier is satisfied by both *sql.DB and *sql.Tx.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func getCategoryTx(ctx context.Context, q querier, userID, categoryID int64) (Category, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT id, user_id, name, is_uncategorized, created_at, updated_at
+		FROM categories WHERE id = ? AND user_id = ?`, categoryID, userID)
+
+	var c Category
+	if err := row.Scan(&c.ID, &c.UserID, &c.Name, &c.IsUncategorized, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Category{}, ErrNotFound
+		}
+		return Category{}, fmt.Errorf("store: get category: %w", err)
+	}
+	return c, nil
+}
+
+func (s *MySQLStore) CreateCategory(ctx context.Context, userID int64, name string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO categories (user_id, name) VALUES (?, ?)`, userID, name)
+	if err != nil {
+		return 0, fmt.Errorf("store: create category: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store: create category: read insert id: %w", err)
+	}
+	return id, nil
+}
+
+func (s *MySQLStore) RenameCategory(ctx context.Context, userID, categoryID int64, name string) error {
+	cat, err := s.GetCategory(ctx, userID, categoryID)
+	if err != nil {
+		return err
+	}
+	if cat.IsUncategorized {
+		return ErrForbiddenSystemCategory
+	}
+
+	_, err = s.db.ExecContext(ctx, `UPDATE categories SET name = ? WHERE id = ? AND user_id = ?`, name, categoryID, userID)
+	if err != nil {
+		return fmt.Errorf("store: rename category: %w", err)
+	}
+	return nil
+}
+
+func (s *MySQLStore) DeleteCategoryAndReassign(ctx context.Context, userID, categoryID int64, reassignTo *int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: delete category: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	target, err := getCategoryTx(ctx, tx, userID, categoryID)
+	if err != nil {
+		return err
+	}
+	if target.IsUncategorized {
+		return ErrForbiddenSystemCategory
+	}
+
+	var destID int64
+	if reassignTo != nil {
+		dest, err := getCategoryTx(ctx, tx, userID, *reassignTo)
+		if err != nil {
+			return err
+		}
+		if dest.ID == target.ID {
+			return fmt.Errorf("store: delete category: reassign target must differ from the category being deleted")
+		}
+		destID = dest.ID
+	} else {
+		destID, err = findOrCreateUncategorizedTx(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE vault_items SET category_id = ? WHERE user_id = ? AND category_id = ?`, destID, userID, target.ID); err != nil {
+		return fmt.Errorf("store: delete category: reassign items: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM categories WHERE id = ? AND user_id = ?`, target.ID, userID); err != nil {
+		return fmt.Errorf("store: delete category: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// findOrCreateUncategorizedTx returns the ID of userID's system
+// Uncategorized category, creating it on first use. Must run inside tx so
+// concurrent deletes for the same user serialize on InnoDB row locks rather
+// than racing to create two Uncategorized rows (a known, documented
+// simplification -- see 003-vault-schema.sql's comment on is_uncategorized
+// for why this isn't DB-constrained).
+func findOrCreateUncategorizedTx(ctx context.Context, tx *sql.Tx, userID int64) (int64, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id FROM categories WHERE user_id = ? AND is_uncategorized = TRUE LIMIT 1`, userID)
+	var id int64
+	err := row.Scan(&id)
+	switch {
+	case err == nil:
+		return id, nil
+	case errors.Is(err, sql.ErrNoRows):
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO categories (user_id, name, is_uncategorized) VALUES (?, ?, TRUE)`, userID, UncategorizedCategoryName)
+		if err != nil {
+			return 0, fmt.Errorf("store: create uncategorized category: %w", err)
+		}
+		return res.LastInsertId()
+	default:
+		return 0, fmt.Errorf("store: find uncategorized category: %w", err)
+	}
+}
+
+// --- Sprint 2: vault items -------------------------------------------------
+
+func (s *MySQLStore) CreateVaultItem(ctx context.Context, userID, categoryID int64, encryptedPayload []byte) (VaultItem, error) {
+	if _, err := s.GetCategory(ctx, userID, categoryID); err != nil {
+		return VaultItem{}, err
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO vault_items (user_id, category_id, encrypted_payload) VALUES (?, ?, ?)`,
+		userID, categoryID, encryptedPayload)
+	if err != nil {
+		return VaultItem{}, fmt.Errorf("store: create vault item: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return VaultItem{}, fmt.Errorf("store: create vault item: read insert id: %w", err)
+	}
+	return s.GetVaultItem(ctx, userID, id)
+}
+
+func (s *MySQLStore) ListVaultItems(ctx context.Context, userID int64, categoryID *int64) ([]VaultItem, error) {
+	query := `
+		SELECT id, user_id, category_id, encrypted_payload, created_at, updated_at
+		FROM vault_items WHERE user_id = ?`
+	args := []any{userID}
+	if categoryID != nil {
+		query += " AND category_id = ?"
+		args = append(args, *categoryID)
+	}
+	query += " ORDER BY updated_at DESC, id DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list vault items: %w", err)
+	}
+	defer rows.Close()
+
+	var out []VaultItem
+	for rows.Next() {
+		var v VaultItem
+		if err := rows.Scan(&v.ID, &v.UserID, &v.CategoryID, &v.EncryptedPayload, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: list vault items: scan: %w", err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list vault items: rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MySQLStore) GetVaultItem(ctx context.Context, userID, itemID int64) (VaultItem, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, category_id, encrypted_payload, created_at, updated_at
+		FROM vault_items WHERE id = ? AND user_id = ?`, itemID, userID)
+
+	var v VaultItem
+	if err := row.Scan(&v.ID, &v.UserID, &v.CategoryID, &v.EncryptedPayload, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return VaultItem{}, ErrNotFound
+		}
+		return VaultItem{}, fmt.Errorf("store: get vault item: %w", err)
+	}
+	return v, nil
+}
+
+func (s *MySQLStore) UpdateVaultItem(ctx context.Context, userID, itemID int64, newCategoryID *int64, encryptedPayload []byte) (VaultItem, error) {
+	if _, err := s.GetVaultItem(ctx, userID, itemID); err != nil {
+		return VaultItem{}, err
+	}
+
+	if newCategoryID != nil {
+		if _, err := s.GetCategory(ctx, userID, *newCategoryID); err != nil {
+			return VaultItem{}, err
+		}
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE vault_items SET category_id = ?, encrypted_payload = ? WHERE id = ? AND user_id = ?`,
+			*newCategoryID, encryptedPayload, itemID, userID)
+		if err != nil {
+			return VaultItem{}, fmt.Errorf("store: update vault item: %w", err)
+		}
+	} else {
+		_, err := s.db.ExecContext(ctx, `
+			UPDATE vault_items SET encrypted_payload = ? WHERE id = ? AND user_id = ?`,
+			encryptedPayload, itemID, userID)
+		if err != nil {
+			return VaultItem{}, fmt.Errorf("store: update vault item: %w", err)
+		}
+	}
+
+	return s.GetVaultItem(ctx, userID, itemID)
+}
+
+func (s *MySQLStore) DeleteVaultItem(ctx context.Context, userID, itemID int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM vault_items WHERE id = ? AND user_id = ?`, itemID, userID)
+	if err != nil {
+		return fmt.Errorf("store: delete vault item: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete vault item: rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

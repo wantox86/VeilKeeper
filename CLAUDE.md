@@ -100,6 +100,30 @@ that is itself Keystore-protected, OR keep the decrypted index in memory only fo
 session (simplest for V0.1; revisit if offline search across app restarts becomes a real
 requirement). Either way: nothing decrypted ever reaches disk unencrypted.
 
+### 5. Delete category behavior (Sprint 2) — reassign to a lazily-created "Uncategorized" category
+
+SPEC-BASE.md Section 14 requires deleting a category to never silently delete its vault items,
+and lists two example safe behaviors: move items to another category, or move them to
+"Uncategorized." This repo implements **both**, with the second as the default:
+
+- `DELETE /api/v1/categories/{id}` accepts an optional `?reassign_to=<category_id>` query
+  parameter. If present (and that category belongs to the same user), the deleted category's
+  items are moved there.
+- If absent, items are moved into the user's **Uncategorized** category, which is **not** one of
+  the 5 default categories created at registration -- it's created lazily, on first use, the
+  first time a category is deleted without an explicit `reassign_to`. This avoids a category
+  showing up with 0 items forever for users who never delete anything.
+- The Uncategorized category itself cannot be deleted or renamed (`409 system_category`) -- it's
+  the safety net; deleting it would reintroduce the exact silent-data-loss problem this decision
+  exists to prevent. It has no other special treatment (it's a normal category otherwise, visible
+  in category lists, items can be moved in/out of it freely via normal item updates).
+- Implementation note: finding-or-creating the Uncategorized category runs inside the same DB
+  transaction as the reassignment + delete (`store.DeleteCategoryAndReassign`), so a concurrent
+  double-delete from the same user can't create two Uncategorized rows (MySQL row locking
+  serializes it) -- there's no DB-level uniqueness constraint enforcing "at most one Uncategorized
+  category per user" because MySQL has no portable partial-unique-index for that; this is a
+  documented, accepted simplification for a single-user-at-a-time homelab app.
+
 ## Docker naming (must not collide with the Qoder build)
 
 The Qoder build (`vk-sprint3-veilkeepers-api-1` / `vk-sprint3-veilkeepers-mysql-1`, API on host
@@ -234,4 +258,83 @@ Delivered:
   locally rather than only trusting CI.
 - `.env.example` and this file both updated for the new auth-related config/state.
 
-Not started: Sprint 2 (Vault Foundation) onward.
+**Sprint 2 (Vault Foundation) — complete.**
+
+Delivered:
+
+- Backend (`backend/internal/store` extended with `CategoryStore`/`VaultItemStore`;
+  `backend/internal/httpserver/category_handlers.go`, `vault_handlers.go`,
+  `session_middleware.go` new): `GET/POST /api/v1/categories`, `PUT/DELETE
+  /api/v1/categories/{id}`, `GET/POST /api/v1/vault/items`, `GET/PUT/DELETE
+  /api/v1/vault/items/{id}` -- all behind a new `requireSession` middleware that maps a bearer
+  token to an authenticated user ID via the existing `sessions` table (Sprint 1), injected into
+  the request context for every store call, enforcing ownership scoping (SPEC-BASE.md Section 30
+  Section 47). Default categories (Common/Work/Tools/Personal/Other) are created automatically at
+  registration (`store.CreateDefaultCategories`, called from `handleRegister`; a failure there
+  logs but doesn't fail registration itself). Delete-category behavior: see "Resolved Design
+  Decisions" #5 above (reassign to an explicit category or a lazily-created Uncategorized one).
+  Vault items store `encrypted_payload` as an opaque `MEDIUMBLOB` (base64 over the wire) -- the
+  server never decodes, inspects, or logs its contents, only moves bytes. Migration:
+  `infra/mysql/init/003-vault-schema.sql` (`categories`, `vault_items`, with `vault_items.category_id`
+  FK set `ON DELETE RESTRICT` as defense-in-depth since application code always reassigns before
+  deleting a category). Unit tests (`category_handlers_test.go`, `vault_handlers_test.go`,
+  `fake_store_test.go` extended to a full in-memory `store.Store` fake): default-categories-at-
+  registration, category CRUD, delete-with-reassignment (both explicit `reassign_to` and the
+  Uncategorized fallback), Uncategorized-cannot-be-deleted, vault item CRUD, category filter on
+  list, **explicit user-isolation tests** for both categories and vault items (user B gets 404
+  reading/renaming/deleting/creating-in user A's resources, per SPEC-BASE.md Section 47), session-
+  required-on-all-vault-routes, and an end-to-end encryption round-trip test (AES-256-GCM
+  encrypt -> store -> retrieve -> decrypt -> byte-identical, using a stand-in cipher matching the
+  Android wire format -- the real client crypto is Android-side, see below). `go test -race
+  -cover ./...`: 56 tests, all passing. `gofmt`/`go vet`: clean.
+  Manually verified end-to-end against a fresh `docker compose up -d`: registered two users,
+  confirmed default categories auto-created; created a category + vault item for user A via
+  `curl`, confirmed via direct MySQL query that `vault_items.encrypted_payload` is opaque bytes
+  (hex-dumped, matched the exact ciphertext sent, no plaintext title/content anywhere in the row);
+  confirmed user B gets 404 reading/modifying user A's category and vault item by ID, and that
+  user B's own `GET /api/v1/categories` never lists user A's rows; deleted user A's category
+  containing an item with no `reassign_to`, confirmed the item survived and moved into a newly-
+  auto-created "Uncategorized" category; confirmed deleting that Uncategorized category itself
+  returns `409 system_category`. `docker ps` reconfirmed zero collision with the Qoder build
+  throughout, then `docker compose down -v` to tear down.
+- Android (`android/app/.../crypto/VaultItemCrypto.kt`, `.../data/VaultDtos.kt`, `VaultApi.kt`,
+  `VaultRepository.kt`, `.../ui/home`, `.../ui/category`, `.../ui/vault`): Home screen
+  (SPEC-BASE.md Section 18.3: category tiles with item counts + a "Recent" list), Category screen
+  (Section 19: item list with a **local-only** search/filter over already-decrypted titles/previews
+  -- never sent to the backend, per Section 16), Vault Detail screen (Section 20: content blocks
+  rendered as cards, secrets hidden by default with a per-block reveal/copy per Section 22), and
+  Add Item flow (Section 21: fast chip-based type picker for text/secret/note -- image/attachment
+  is explicitly out of scope, Sprint 5). `VaultItemCrypto` serializes `{title, content[]}` to JSON
+  (kotlinx.serialization) and encrypts/decrypts it with the VDK (unwrapped at login, held in the
+  existing `AuthSessionHolder` from Sprint 1) via the existing `AesGcm` object -- no new crypto
+  primitives introduced. `VaultRepository` is the single place that touches the VDK and calls
+  `VaultItemCrypto`; screens/ViewModels only ever see decrypted domain models
+  (`Category`/`DecryptedVaultItem`), never ciphertext or ID payload internals. Per-screen
+  ViewModels (`HomeViewModel`, `CategoryViewModel`, `VaultDetailViewModel`, `AddItemViewModel`)
+  built via `VaultViewModelFactory`'s `viewModelFactory { initializer { ... } }` DSL (since these
+  need a route-scoped category/item ID baked into the constructor, unlike Sprint 1's single
+  shared `AuthViewModelFactory`). `MainActivity`'s `NavHost` extended with `home`,
+  `category/{categoryId}`, `item/{itemId}`, `add-item/{categoryId}` routes; `FLAG_SECURE` is kept
+  activity-wide (SPEC-BASE.md Section 26) rather than toggled per-screen, since every screen in
+  this app is vault-adjacent. Added `androidx.compose.material:material-icons-extended` dependency
+  (Visibility/VisibilityOff/ContentCopy aren't in the small "core" icon set already used since
+  Sprint 0). Unit tests added: `VaultItemCryptoTest` (full payload round-trip, unique-nonce,
+  wrong-key rejection, ciphertext-never-contains-plaintext), `VaultRepositoryTest` (against a new
+  `FakeVaultApi`, covering the full create-category -> create-item -> retrieve -> decrypt flow,
+  category deletion reassignment, and error mapping), `HomeViewModelTest`, `CategoryViewModelTest`
+  (including the local-search-filter behavior), `VaultDetailViewModelTest`, `AddItemViewModelTest`
+  (including validation and the ciphertext-not-plaintext assertion at the ViewModel layer).
+  `./gradlew clean assembleDebug testDebugUnitTest lintDebug`: all green (56 unit tests passing,
+  0 lint errors, same pre-existing/unrelated warning categories as Sprint 1 plus a few new
+  `Icons.Filled.ArrowBack` deprecation warnings -- AutoMirrored variant not adopted yet, cosmetic).
+  **Known, disclosed scope note**: Section 27's full "commercially designed" visual polish (custom
+  iconography beyond the extended set, bespoke spacing/animation system, dark/light theme tuning)
+  is not attempted here -- Sprint 2's screens are functionally complete and reasonably laid out
+  Material 3, but a dedicated visual design pass is left for later, matching Section 56's
+  "no premature overengineering" (a13n/animation polish before the CRUD flow itself was proven
+  end-to-end would be backwards). Similarly, clipboard auto-clear (Section 23) is out of scope
+  here (Sprint 3 "Secure UX"); the copy button uses the plain clipboard with no timer.
+- `.env.example` unchanged (no new secrets this sprint); this file updated for Sprint 2 state +
+  the new "Delete category behavior" resolved decision.
+
+Not started: Sprint 3 (Secure UX: auto-lock, biometric unlock, clipboard auto-clear) onward.

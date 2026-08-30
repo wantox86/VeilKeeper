@@ -6,6 +6,7 @@
 
 # Android / Gradle
 android/.gradle/
+android/.kotlin/
 android/local.properties
 android/.idea/
 android/*.iml

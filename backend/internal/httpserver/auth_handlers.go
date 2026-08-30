@@ -18,7 +18,7 @@ import (
 // (rather than package-level globals) so NewMux can construct fresh,
 // per-process rate limiters/lockout trackers.
 type authDeps struct {
-	store   store.AuthStore
+	store   store.Store
 	logger  *slog.Logger
 	cfg     config.AuthConfig
 	lockout *auth.AccountLockout
@@ -186,6 +186,16 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case err == nil:
+		// SPEC-BASE.md Section 14: default categories are created
+		// automatically at registration. A failure here shouldn't fail the
+		// whole registration (the account itself was created successfully
+		// and the user can still create categories manually) -- log and
+		// continue, matching the "don't leak internal details, don't crash
+		// a mostly-successful operation" pattern used elsewhere in this
+		// handler.
+		if err := d.store.CreateDefaultCategories(r.Context(), userID); err != nil {
+			d.logger.Error("register: create default categories failed", "error", err.Error(), "user_id", userID)
+		}
 		writeJSON(w, http.StatusCreated, registerResponse{UserID: userID, Email: auth.NormalizeEmail(email)})
 	case errors.Is(err, store.ErrAlreadyExists):
 		writeError(w, http.StatusConflict, "email_taken", "an account with this email already exists")

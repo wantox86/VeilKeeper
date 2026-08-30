@@ -63,6 +63,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // Extended icon set: Sprint 2 vault screens need Visibility/
+    // VisibilityOff/ContentCopy (SPEC-BASE.md Section 22/23), which aren't
+    // in the small "core" Icons.Filled set already used since Sprint 0.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.3")
 
     // Coroutines: async orchestration for network calls + off-main-thread

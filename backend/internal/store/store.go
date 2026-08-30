@@ -97,3 +97,111 @@ type AuthStore interface {
 	// revoked, so logout is idempotent.
 	RevokeSession(ctx context.Context, tokenHash string) error
 }
+
+// --- Sprint 2: vault foundation (categories + vault items) -----------------
+
+// ErrForbiddenSystemCategory is returned by DeleteCategoryAndReassign when
+// the caller tries to delete the user's system "Uncategorized" category
+// (see CLAUDE.md Sprint 2 "Delete category behavior").
+var ErrForbiddenSystemCategory = errors.New("store: cannot delete the system Uncategorized category")
+
+// DefaultCategoryNames are created automatically for every new user at
+// registration (SPEC-BASE.md Section 14).
+var DefaultCategoryNames = []string{"Common", "Work", "Tools", "Personal", "Other"}
+
+// UncategorizedCategoryName is the reserved, lazily-created "safety net"
+// category vault items are moved into when their category is deleted
+// without an explicit reassignment target.
+const UncategorizedCategoryName = "Uncategorized"
+
+// Category is a user-owned grouping for vault items. Name is plaintext
+// (categories are not considered sensitive vault content per SPEC-BASE.md
+// Section 13/32 -- only vault_items.encrypted_payload is).
+type Category struct {
+	ID              int64
+	UserID          int64
+	Name            string
+	IsUncategorized bool
+	ItemCount       int // populated by ListCategories only
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// VaultItem is a user-owned vault entry. EncryptedPayload is opaque
+// client-produced AES-256-GCM ciphertext -- the server never decrypts it.
+type VaultItem struct {
+	ID               int64
+	UserID           int64
+	CategoryID       int64
+	EncryptedPayload []byte
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// CategoryStore is the persistence contract for Sprint 2 category
+// operations. All methods are ownership-scoped by userID and return
+// ErrNotFound if the category doesn't exist or doesn't belong to that user
+// (SPEC-BASE.md Section 47, "User A cannot access ... User B categories").
+type CategoryStore interface {
+	// CreateDefaultCategories creates the standard starter categories for a
+	// newly-registered user. Called once, right after CreateUser succeeds.
+	CreateDefaultCategories(ctx context.Context, userID int64) error
+
+	// ListCategories returns all of userID's categories with their vault
+	// item counts, ordered by creation order.
+	ListCategories(ctx context.Context, userID int64) ([]Category, error)
+
+	// GetCategory returns a single category, ownership-checked.
+	GetCategory(ctx context.Context, userID, categoryID int64) (Category, error)
+
+	// CreateCategory creates a new (non-system) category and returns its ID.
+	CreateCategory(ctx context.Context, userID int64, name string) (int64, error)
+
+	// RenameCategory renames an existing category. Returns
+	// ErrForbiddenSystemCategory if categoryID is the Uncategorized
+	// category.
+	RenameCategory(ctx context.Context, userID, categoryID int64, name string) error
+
+	// DeleteCategoryAndReassign deletes categoryID after moving all of its
+	// vault items to reassignTo. If reassignTo is nil, items are moved to
+	// the user's Uncategorized category (created on demand). Returns
+	// ErrForbiddenSystemCategory if categoryID is itself the Uncategorized
+	// category, or ErrNotFound if categoryID/reassignTo don't belong to
+	// userID. Runs as a single transaction.
+	DeleteCategoryAndReassign(ctx context.Context, userID, categoryID int64, reassignTo *int64) error
+}
+
+// VaultItemStore is the persistence contract for Sprint 2 vault item CRUD.
+// All methods are ownership-scoped by userID, same rules as CategoryStore.
+type VaultItemStore interface {
+	// CreateVaultItem creates a new item. Returns ErrNotFound if categoryID
+	// doesn't belong to userID.
+	CreateVaultItem(ctx context.Context, userID, categoryID int64, encryptedPayload []byte) (VaultItem, error)
+
+	// ListVaultItems returns userID's items, optionally filtered to a single
+	// category (categoryID == nil means "all categories"), newest-updated
+	// first.
+	ListVaultItems(ctx context.Context, userID int64, categoryID *int64) ([]VaultItem, error)
+
+	// GetVaultItem returns a single item, ownership-checked.
+	GetVaultItem(ctx context.Context, userID, itemID int64) (VaultItem, error)
+
+	// UpdateVaultItem updates an item's category and/or ciphertext. Pass nil
+	// for newCategoryID to leave the category unchanged. Returns ErrNotFound
+	// if itemID doesn't belong to userID, or if newCategoryID doesn't belong
+	// to userID.
+	UpdateVaultItem(ctx context.Context, userID, itemID int64, newCategoryID *int64, encryptedPayload []byte) (VaultItem, error)
+
+	// DeleteVaultItem deletes an item, ownership-checked.
+	DeleteVaultItem(ctx context.Context, userID, itemID int64) error
+}
+
+// Store is the full persistence contract for the API server (Sprint 1 auth
+// + Sprint 2 vault foundation). MySQLStore implements all three; handlers
+// depend on the narrower interfaces they actually need so tests can supply
+// minimal fakes.
+type Store interface {
+	AuthStore
+	CategoryStore
+	VaultItemStore
+}
