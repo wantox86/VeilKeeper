@@ -59,11 +59,39 @@ class CategoryViewModelTest {
 
         val viewModel = CategoryViewModel(repository, cat.id)
         advanceUntilIdle()
+        val callsAfterInitialLoad = api.listVaultItemsCallCount
 
         viewModel.onQueryChange("gitlab")
 
         val visible = viewModel.uiState.value.visibleItems
         assertEquals(1, visible.size)
         assertEquals("GitLab Production", visible.first().title)
+        assertEquals(callsAfterInitialLoad, api.listVaultItemsCallCount)
+    }
+
+    @Test
+    fun `local search also matches labels and note content, not just title`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("A").getOrThrow()
+        repository.createItem(
+            cat.id,
+            "Server creds",
+            listOf(ContentBlockDto(type = "secret", label = "Token", value = "glpat-xxxxx")),
+        ).getOrThrow()
+        repository.createItem(
+            cat.id,
+            "VPN",
+            listOf(ContentBlockDto(type = "note", value = "internal use only")),
+        ).getOrThrow()
+
+        val viewModel = CategoryViewModel(repository, cat.id)
+        advanceUntilIdle()
+
+        viewModel.onQueryChange("token")
+        assertEquals(1, viewModel.uiState.value.visibleItems.size)
+        assertEquals("Server creds", viewModel.uiState.value.visibleItems.first().title)
+
+        viewModel.onQueryChange("internal")
+        assertEquals(1, viewModel.uiState.value.visibleItems.size)
+        assertEquals("VPN", viewModel.uiState.value.visibleItems.first().title)
     }
 }

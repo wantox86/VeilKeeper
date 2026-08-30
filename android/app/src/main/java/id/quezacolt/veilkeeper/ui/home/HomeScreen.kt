@@ -24,6 +24,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -37,6 +38,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.data.Category
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
+import androidx.compose.material.icons.filled.Search
 
 /**
  * Home screen (SPEC-BASE.md Section 18.3): category tiles with item counts
@@ -84,7 +86,17 @@ fun HomeScreen(
             state.errorMessage != null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Text(state.errorMessage ?: "Something went wrong", color = MaterialTheme.colorScheme.error)
             }
-            else -> HomeContent(padding, state.categories, state.recentItems, onOpenCategory, onOpenItem)
+            else -> HomeContent(
+                padding = padding,
+                categories = state.categories,
+                recentItems = state.recentItems,
+                searchQuery = state.searchQuery,
+                isSearching = state.isSearching,
+                searchResults = state.searchResults,
+                onSearchQueryChange = viewModel::onSearchQueryChange,
+                onOpenCategory = onOpenCategory,
+                onOpenItem = onOpenItem,
+            )
         }
     }
 }
@@ -94,45 +106,82 @@ private fun HomeContent(
     padding: PaddingValues,
     categories: List<Category>,
     recentItems: List<DecryptedVaultItem>,
+    searchQuery: String,
+    isSearching: Boolean,
+    searchResults: List<DecryptedVaultItem>,
+    onSearchQueryChange: (String) -> Unit,
     onOpenCategory: (Category) -> Unit,
     onOpenItem: (DecryptedVaultItem) -> Unit,
 ) {
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
         item {
-            Text("Categories", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
+            // SPEC-BASE.md Section 18.3 / Phase 4: global search bar. Filters
+            // over already-decrypted items in memory (VaultSearch) -- no
+            // plaintext query is ever sent to the backend (Section 16).
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                label = { Text("Search your vault...") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(16.dp))
         }
-        item {
-            if (categories.isEmpty()) {
-                Text("No categories yet.", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                LazyRow {
-                    items(categories) { category ->
-                        CategoryTile(category = category, onClick = { onOpenCategory(category) })
-                        Spacer(Modifier.height(0.dp))
+
+        if (isSearching) {
+            item {
+                Text("Results", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            if (searchResults.isEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                        Text("No results for \"$searchQuery\".", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-            }
-            Spacer(Modifier.height(24.dp))
-        }
-        item {
-            Text("Recent", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-        }
-        if (recentItems.isEmpty()) {
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Icon(Icons.Filled.Lock, contentDescription = null)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Your vault is empty. Tap + to add your first secret.", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                items(searchResults) { item ->
+                    RecentItemRow(item = item, onClick = { onOpenItem(item) })
                 }
             }
         } else {
-            items(recentItems) { item ->
-                RecentItemRow(item = item, onClick = { onOpenItem(item) })
+            item {
+                Text("Categories", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            item {
+                if (categories.isEmpty()) {
+                    Text("No categories yet.", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    LazyRow {
+                        items(categories) { category ->
+                            CategoryTile(category = category, onClick = { onOpenCategory(category) })
+                            Spacer(Modifier.height(0.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+            item {
+                Text("Recent", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            if (recentItems.isEmpty()) {
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(Icons.Filled.Lock, contentDescription = null)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Your vault is empty. Tap + to add your first secret.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            } else {
+                items(recentItems) { item ->
+                    RecentItemRow(item = item, onClick = { onOpenItem(item) })
+                }
             }
         }
     }

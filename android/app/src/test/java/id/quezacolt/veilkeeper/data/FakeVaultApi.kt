@@ -19,6 +19,15 @@ class FakeVaultApi : VaultApi {
 
     var forcedErrorCode: Int? = null // when set, every call fails with this code
 
+    /**
+     * Counts calls to [listVaultItems]. Used by Sprint 4 search tests to
+     * assert that typing a search query never triggers an additional fetch
+     * -- search is a pure in-memory filter over data already loaded by the
+     * screen's initial [refresh] (see HomeViewModel/CategoryViewModel).
+     */
+    var listVaultItemsCallCount = 0
+        private set
+
     override suspend fun listCategories(bearerToken: String): Response<List<CategoryDto>> {
         forcedErrorCode?.let { return errorResponse(it) }
         return Response.success(categories.values.sortedBy { it.id })
@@ -60,6 +69,7 @@ class FakeVaultApi : VaultApi {
     }
 
     override suspend fun listVaultItems(bearerToken: String, categoryId: Long?): Response<List<VaultItemDto>> {
+        listVaultItemsCallCount++
         forcedErrorCode?.let { return errorResponse(it) }
         val filtered = items.values.filter { categoryId == null || it.categoryId == categoryId }
         return Response.success(filtered.sortedByDescending { it.updatedAt })

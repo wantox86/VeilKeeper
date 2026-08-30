@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import id.quezacolt.veilkeeper.data.Category
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
 import id.quezacolt.veilkeeper.data.VaultRepository
+import id.quezacolt.veilkeeper.data.VaultSearch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,16 +21,13 @@ data class CategoryUiState(
     /**
      * Local, client-side-only filter over already-decrypted items
      * (SPEC-BASE.md Section 16: search must never send plaintext queries to
-     * the backend). Matches on title or preview text.
+     * the backend). Sprint 4: delegates to the same [VaultSearch] matcher
+     * used by the Home screen's global search, so category-scoped search
+     * matches title/labels/notes/content consistently rather than the
+     * title-or-preview-only heuristic this screen used pre-Sprint-4.
      */
     val visibleItems: List<DecryptedVaultItem>
-        get() = if (query.isBlank()) {
-            allItems
-        } else {
-            allItems.filter {
-                it.title.contains(query, ignoreCase = true) || it.preview.contains(query, ignoreCase = true)
-            }
-        }
+        get() = VaultSearch.filter(allItems, query)
 }
 
 /** Backs the Category screen (SPEC-BASE.md Section 19). */
