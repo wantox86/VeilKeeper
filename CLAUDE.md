@@ -151,19 +151,14 @@ Delivered:
 - `.env.example` at repo root with placeholder values only; real `.env` is gitignored.
 - GitHub Actions: `backend.yml` (gofmt check, `go vet`, `go test -race -cover`, `go build`,
   Docker image build), `android.yml` (Gradle `assembleDebug`, `testDebugUnitTest`, `lintDebug`,
-  APK artifact upload), `security.yml` (gitleaks secret scanning + `govulncheck`). Not yet
-  confirmed green on GitHub itself (see note below) — locally, all equivalent commands
-  (`gofmt`, `go vet`, `go test`, `go build`, `docker build`, and the full Android Gradle build
-  including `assembleDebug`/`testDebugUnitTest`/`lintDebug` via a locally-provisioned SDK) were
-  run and pass.
+  APK artifact upload), `security.yml` (gitleaks secret scanning + `govulncheck`). **Confirmed
+  green on GitHub Actions** (`gh run list` on commit `ca76be7`): Backend CI, Android CI, Security
+  CI all passed. One fix needed along the way: `govulncheck` initially failed because
+  `setup-go@v5` pinned to `go-version: "1.23"` resolved to `go1.23.12`, which has several
+  since-patched stdlib CVEs (crypto/tls, net/http, crypto/x509) — not a bug in our code, just an
+  outdated toolchain patch level. Fixed by bumping `backend/go.mod`, `backend/Dockerfile`'s base
+  image, and both CI workflows' `go-version` to `1.25`.
 - `README.md` at repo root: quickstart, repo layout, local dev instructions for both backend and
   Android, CI overview.
-
-**Note for next session/sprint**: push to `main` and the first live GitHub Actions run were
-expected to happen right after this Sprint 0 work — check the Actions tab / `gh run list` to
-confirm the workflows are actually green on GitHub's runners (local verification is thorough but
-GitHub-hosted Android SDK provisioning via `android-actions/setup-android` was not itself
-exercised locally, only a manually-provisioned local SDK was used to validate the Gradle build
-logic).
 
 Not started: Sprint 1 (Authentication) onward — no auth/vault/encryption code exists yet.
