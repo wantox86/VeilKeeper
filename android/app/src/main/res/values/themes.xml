@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Sprint 0: a minimal Material3-DayNight base theme. Compose supplies
-         the actual Material 3 theming (colors/typography) at runtime;
-         the real UI/UX pass is Phase 6, per SPEC-BASE.md Section 27/57. -->
-    <style name="Theme.VeilKeeper" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Phase 6: Compose (ui/theme/Theme.kt) owns all actual Material 3
+         colors/typography at runtime. This XML theme only controls the
+         pre-Compose window background shown for a frame on cold start,
+         set to match our light "Midnight Vault" background so there's no
+         mismatched flash before Compose draws. The values-night variant of
+         this file provides the dark counterpart. -->
+    <style name="Theme.VeilKeeper" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
 </resources>

@@ -7,20 +7,23 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,11 +42,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.VeilKeeperApplication
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
+import id.quezacolt.veilkeeper.ui.components.VeilKeeperErrorState
+import id.quezacolt.veilkeeper.ui.components.VeilKeeperLoading
+import id.quezacolt.veilkeeper.ui.components.VeilKeeperStateCrossfade
+import id.quezacolt.veilkeeper.ui.theme.Spacing
+
+private sealed interface DetailScreenState {
+    data object Loading : DetailScreenState
+    data class Error(val message: String) : DetailScreenState
+    data class Content(val item: id.quezacolt.veilkeeper.data.DecryptedVaultItem) : DetailScreenState
+}
 
 /**
  * Vault Detail screen (SPEC-BASE.md Section 20): a secure-notebook-style
@@ -68,13 +82,26 @@ fun VaultDetailScreen(
         if (state.deleted) onDeleted()
     }
 
+    val screenState: DetailScreenState = when {
+        state.isLoading -> DetailScreenState.Loading
+        state.errorMessage != null -> DetailScreenState.Error(state.errorMessage ?: "Something went wrong")
+        state.item != null -> DetailScreenState.Content(state.item!!)
+        else -> DetailScreenState.Loading
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(state.item?.title ?: "Vault Item") },
+                title = {
+                    Text(
+                        state.item?.title?.ifBlank { "(untitled)" } ?: "Vault Item",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -87,19 +114,17 @@ fun VaultDetailScreen(
             )
         },
     ) { padding ->
-        when {
-            state.isLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-            state.errorMessage != null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text(state.errorMessage ?: "Something went wrong", color = MaterialTheme.colorScheme.error)
-            }
-            state.item != null -> LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-                items(state.item!!.content) { block ->
-                    if (block.type == "image") {
-                        AttachmentImageCard(block, state.attachmentImages[block.value.toLongOrNull()], onLoad = viewModel::loadAttachmentImage)
-                    } else {
-                        ContentBlockCard(block)
+        VeilKeeperStateCrossfade(targetState = screenState, modifier = Modifier.fillMaxSize()) { current ->
+            when (current) {
+                is DetailScreenState.Loading -> VeilKeeperLoading(modifier = Modifier.padding(padding))
+                is DetailScreenState.Error -> VeilKeeperErrorState(message = current.message, modifier = Modifier.padding(padding), onRetry = viewModel::refresh)
+                is DetailScreenState.Content -> LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.md)) {
+                    items(current.item.content) { block ->
+                        if (block.type == "image") {
+                            AttachmentImageCard(block, state.attachmentImages[block.value.toLongOrNull()], onLoad = viewModel::loadAttachmentImage)
+                        } else {
+                            ContentBlockCard(block)
+                        }
                     }
                 }
             }
@@ -114,10 +139,15 @@ private fun ContentBlockCard(block: ContentBlockDto) {
     var revealed by remember(block) { mutableStateOf(false) }
     val isSecret = block.type == "secret"
 
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(modifier = Modifier.padding(Spacing.md)) {
             block.label?.let {
-                Text(it, style = MaterialTheme.typography.labelMedium)
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(Spacing.xs))
             }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -129,7 +159,7 @@ private fun ContentBlockCard(block: ContentBlockDto) {
                     IconButton(onClick = { revealed = !revealed }) {
                         Icon(
                             if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (revealed) "Hide" else "Show",
+                            contentDescription = if (revealed) "Hide value" else "Show value",
                         )
                     }
                 }
@@ -147,7 +177,7 @@ private fun ContentBlockCard(block: ContentBlockDto) {
                         )
                     },
                 ) {
-                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy")
+                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy ${block.label ?: "value"}")
                 }
             }
         }
@@ -175,16 +205,21 @@ private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: Attachm
         if (attachmentId != null) onLoad(attachmentId)
     }
 
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Column(modifier = Modifier.padding(Spacing.md)) {
             block.label?.let {
-                Text(it, style = MaterialTheme.typography.labelMedium)
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(Spacing.xs))
             }
             Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
                 when {
-                    attachmentId == null -> Icon(Icons.Filled.BrokenImage, contentDescription = "Invalid attachment reference")
+                    attachmentId == null -> BrokenImagePlaceholder("Invalid attachment reference")
                     attachmentState == null || attachmentState is AttachmentImageState.Loading -> CircularProgressIndicator()
-                    attachmentState is AttachmentImageState.Error -> Icon(Icons.Filled.BrokenImage, contentDescription = attachmentState.message)
+                    attachmentState is AttachmentImageState.Error -> BrokenImagePlaceholder(attachmentState.message)
                     attachmentState is AttachmentImageState.Loaded -> {
                         val bitmap = remember(attachmentState) {
                             BitmapFactory.decodeByteArray(attachmentState.bytes, 0, attachmentState.bytes.size)
@@ -192,11 +227,25 @@ private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: Attachm
                         if (bitmap != null) {
                             Image(bitmap = bitmap.asImageBitmap(), contentDescription = block.label ?: "Attachment image")
                         } else {
-                            Icon(Icons.Filled.BrokenImage, contentDescription = "Could not decode image")
+                            BrokenImagePlaceholder("Could not decode image")
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BrokenImagePlaceholder(message: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(
+            Icons.Filled.BrokenImage,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(28.dp),
+        )
+        Spacer(Modifier.height(Spacing.xs))
+        Text(message, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

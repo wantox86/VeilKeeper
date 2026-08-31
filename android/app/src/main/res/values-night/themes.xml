@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark-mode counterpart of values/themes.xml: platform dark base
+         theme + our dark window background, so cold start never flashes a
+         light background when the device is in dark mode. -->
+    <style name="Theme.VeilKeeper" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

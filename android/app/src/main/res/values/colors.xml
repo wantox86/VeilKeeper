@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Sprint 0 placeholder brand color (dark, calm). Real palette lands
-         in the Phase 6 UI polish pass. -->
+    <!-- "Midnight Vault" palette (SPEC-BASE.md Section 27/28, Phase 6),
+         kept in sync with ui/theme/Color.kt's LightBackground/DarkBackground.
+         Only used for the pre-Compose window background (avoids a white
+         flash on cold start in dark mode) and the launcher icon background;
+         Compose owns every other color at runtime. -->
     <color name="ic_launcher_background">#111318</color>
+    <color name="window_background">#F8F8FC</color>
 </resources>

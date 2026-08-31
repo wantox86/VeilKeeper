@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
@@ -18,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +30,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -34,7 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.VeilKeeperApplication
-import id.quezacolt.veilkeeper.data.VaultBiometricManager
+import id.quezacolt.veilkeeper.ui.theme.Spacing
 
 /**
  * Shown when [id.quezacolt.veilkeeper.data.AuthSessionHolder]'s lock state
@@ -65,18 +71,28 @@ fun UnlockScreen(
 
     Scaffold { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.lg),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(48.dp))
-            Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.height(48.dp))
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Spacing.xxl))
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Icon(
+                    Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(Spacing.md).size(32.dp),
+                )
+            }
+            Spacer(Modifier.height(Spacing.md))
             Text("Vault locked", style = MaterialTheme.typography.headlineSmall)
             state.email?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(Spacing.xs))
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(Spacing.xl))
 
             OutlinedTextField(
                 value = state.password,
@@ -87,34 +103,42 @@ fun UnlockScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(Spacing.sm))
 
             if (state.errorMessage != null) {
-                Text(state.errorMessage!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
+                Text(
+                    state.errorMessage!!,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+                Spacer(Modifier.height(Spacing.sm))
             }
 
             Button(onClick = viewModel::unlockWithPassword, modifier = Modifier.fillMaxWidth(), enabled = !state.isLoading) {
                 if (state.isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.height(20.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
                 } else {
                     Text("Unlock")
                 }
             }
 
             if (biometricAvailable && activity != null) {
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Spacing.sm))
                 OutlinedButton(
                     onClick = { biometricManager.unlock(activity, viewModel::onBiometricResult) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Icon(Icons.Filled.Fingerprint, contentDescription = null)
-                    Spacer(Modifier.height(0.dp))
-                    Text(" Use biometric")
+                    Icon(Icons.Filled.Fingerprint, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(Spacing.xs))
+                    Text("Use biometric")
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(Spacing.lg))
             TextButton(onClick = viewModel::logout) {
                 Text("Not you? Log out")
             }

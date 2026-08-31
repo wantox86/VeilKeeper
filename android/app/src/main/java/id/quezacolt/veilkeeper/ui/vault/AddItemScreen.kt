@@ -13,14 +13,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,10 +43,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.data.ImageCompressor
+import id.quezacolt.veilkeeper.ui.theme.Spacing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,13 +82,13 @@ fun AddItemScreen(
                 title = { Text("Add content") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
             )
         },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.md)) {
             OutlinedTextField(
                 value = state.title,
                 onValueChange = viewModel::onTitleChange,
@@ -88,48 +96,83 @@ fun AddItemScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Spacing.md))
 
             AddBlockRow(onAdd = viewModel::addBlock, onAddImage = viewModel::addPendingImage)
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(Spacing.md))
 
             Text("Content", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(Spacing.xs))
+            if (state.blocks.isEmpty() && state.pendingImages.isEmpty()) {
+                Text(
+                    "Nothing added yet -- pick a type above and add a block.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = Spacing.sm),
+                )
+            }
             LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
                 itemsIndexed(state.blocks) { index, block ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    ) {
-                        Text("${block.type}${block.label?.let { ": $it" } ?: ""} — ${block.value}", modifier = Modifier.weight(1f))
-                        IconButton(onClick = { viewModel.removeBlock(index) }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Remove")
-                        }
-                    }
+                    ContentPreviewRow(
+                        primary = block.label?.takeIf { it.isNotBlank() } ?: block.type.replaceFirstChar { it.uppercase() },
+                        secondary = if (block.type == "secret") "•".repeat(minOf(block.value.length, 12).coerceAtLeast(6)) else block.value,
+                        onRemove = { viewModel.removeBlock(index) },
+                    )
                 }
                 itemsIndexed(state.pendingImages) { index, image ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    ) {
-                        Text("image: ${image.filename} (${image.bytes.size / 1024} KB, will upload on save)", modifier = Modifier.weight(1f))
-                        IconButton(onClick = { viewModel.removePendingImage(index) }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Remove")
-                        }
-                    }
+                    ContentPreviewRow(
+                        primary = image.filename,
+                        secondary = "${image.bytes.size / 1024} KB -- will upload on save",
+                        onRemove = { viewModel.removePendingImage(index) },
+                    )
                 }
             }
 
             state.errorMessage?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .padding(top = Spacing.sm)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
             }
 
             Button(
                 onClick = viewModel::save,
                 enabled = !state.isSaving,
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm),
             ) {
                 if (state.isSaving) {
-                    CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp).padding(end = Spacing.sm),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
                 }
                 Text("Save")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContentPreviewRow(primary: String, secondary: String, onRemove: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(primary, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(secondary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Filled.Close, contentDescription = "Remove $primary")
             }
         }
     }
@@ -169,14 +212,15 @@ private fun AddBlockRow(
     Column {
         Row(modifier = Modifier.fillMaxWidth()) {
             BLOCK_TYPES.forEach { type ->
-                AssistChip(
+                FilterChip(
+                    selected = selectedType == type,
                     onClick = { selectedType = type },
                     label = { Text(type.replaceFirstChar { it.uppercase() }) },
-                    modifier = Modifier.padding(end = 8.dp),
+                    modifier = Modifier.padding(end = Spacing.sm),
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(Spacing.sm))
 
         if (selectedType == "image") {
             // Image blocks skip the label/value fields entirely -- the flow
@@ -188,10 +232,10 @@ private fun AddBlockRow(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 if (isCompressing) {
-                    CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp).padding(end = Spacing.sm))
                     Text("Compressing…")
                 } else {
-                    Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+                    Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.padding(end = Spacing.sm))
                     Text("Pick image")
                 }
             }
@@ -206,7 +250,7 @@ private fun AddBlockRow(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(Spacing.sm))
         }
         OutlinedTextField(
             value = value,
@@ -220,7 +264,7 @@ private fun AddBlockRow(
                 label = ""
                 value = ""
             },
-            modifier = Modifier.padding(top = 8.dp),
+            modifier = Modifier.padding(top = Spacing.sm),
         ) {
             Text("Add block")
         }
