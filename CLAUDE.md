@@ -385,3 +385,64 @@ Delivered (`android/app/.../data`, `.../crypto`, `.../ui/auth`, `.../ui/settings
 - `./gradlew assembleDebug testDebugUnitTest lintDebug`: all green -- **112 unit tests passing** (unchanged from Sprint 5, this sprint touched no ViewModel/business logic), 0 lint errors, 16 warnings total (`GradleDependency` x11, `UnusedResources` x2, `ObsoleteSdkInt` x1, `MonochromeLauncherIcon` x1, `DataExtractionRules` x1 -- all pre-existing/unrelated to this sprint's changes; the `ModifierParameter` warning introduced mid-sprint by `VeilKeeperEmptyState`'s parameter order was caught and fixed before this final count, and the `AutoMirrored`-icon deprecation warnings present in prior sprints are gone now that this sprint switched every `ArrowBack` usage to the `AutoMirrored` variant).
 - **Known, disclosed limitation** (same category as every prior sprint's testing gap): no Android emulator or physical device was available in this sprint's sandbox (`adb`/`emulator` both absent), so the requested manual screenshot/visual check of Home/Login/Vault Detail in light and dark mode **could not be performed**. Everything was verified by build success + lint + the existing unit test suite + careful manual code review of every color/spacing/component choice against SPEC-BASE.md Section 27, but the actual rendered appearance on a device/emulator is unverified. This should be spot-checked on a real device or emulator before considering the visual design final.
 - `.env.example` unchanged (no new secrets, no backend changes). This file updated for Sprint 6 state.
+
+**Sprint 7 (Homelab Deployment) — complete. This is the final sprint of the 8-sprint roadmap.**
+
+Delivered (`docker-compose.yml`, `README.md`; no backend/Android code changes -- this sprint is infra/docs only, as scoped):
+
+- **Production Docker configuration review**: the `docker-compose.yml` from Sprint 0 already had the right shape (`restart: unless-stopped` on both services, healthchecks, non-colliding port/naming vs. the Qoder `vk-sprint3` stack, named volume for MySQL, bind mount for attachments) -- Sprint 7 added what was missing: explicit `deploy.resources.limits`/`reservations` on both services (`api`: 1.0 CPU / 256M limit, 64M reservation; `mysql`: 1.5 CPU / 512M limit, 128M reservation), confirmed these are honored by plain `docker compose up` (not just Swarm) on the installed Compose v5.1.0 via `docker inspect --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'` on both running containers.
+- **MySQL homelab tuning** (new `command:` on the `mysql` service): `--performance-schema=OFF` and `--innodb-buffer-pool-size=96M`. Measured impact directly via `docker stats`: idle MySQL RSS dropped from **~441 MiB to ~191 MiB** (performance_schema instrumentation tables, sized for production DB observability, were the dominant cost -- not needed for a single-user homelab vault with no external monitoring consuming those tables). This is the one deviation from "just add limits" -- documented as a deliberate tuning decision (not stopped-and-asked, since it's a pure resource/perf choice with no security or architecture impact, per Section 56 Rule 2) directly in `docker-compose.yml`'s comment next to the `command:` block.
+- **Persistent volumes**: already correct since Sprint 0/5 (`veilkeeper-mysql-data` named volume for MySQL, `./data/attachments` bind mount for attachments) -- verified again this sprint via the restart-recovery tests below (data survived every restart short of `down -v`). Backup/restore documented for both (see below).
+- **Backup strategy** (SPEC-BASE.md Section 48): documented in `README.md`'s new "Backup & restore" section -- manual `mysqldump --single-transaction` (safe against a live stack, no API downtime needed) + `tar` of `data/attachments/`, both timestamped. **Deliberately no automated backup container/cron job shipped** -- for a single-user homelab app, an always-running backup process is exactly the kind of extra moving part Section 60 warns against; the two commands are simple enough to run by hand or wire into whatever scheduler the homelab host already has (documented as an explicit, disclosed choice, not an oversight). README also explicitly flags backups as sensitive (full ciphertext + metadata copy of someone's vault, even though the server never had plaintext) and says to store them on trusted local storage only, never a public location -- matching this sprint's brief.
+  - **Verified the backup/restore procedure actually works, not just documented it**: registered a real test user against a fresh `docker compose up -d`, `mysqldump`'d the database, restored the dump into a scratch database (`veilkeeper_restore_test`), and confirmed the restored row matched byte-for-byte (`id=1, email=sprint7-test@example.com`) before dropping the scratch DB.
+- **Resource-conscious configuration / acceptance verification** (SPEC-BASE.md Phase 7 acceptance, done for real, not just inspected): fresh `docker compose up -d --build` against the real MACMINI Docker host, confirmed via `docker ps` **zero collision** with the already-running Qoder `vk-sprint3` stack (both stacks' `api`/`mysql` containers healthy simultaneously throughout). `docker stats --no-stream` after light exercise (register/prelogin calls): **`veilkeeper-api` ~41 MiB / 256 MiB limit (~16%), ~0% CPU; `veilkeeper-mysql` ~191 MiB / 512 MiB limit (~37%), ~0.4% CPU** -- both comfortably within their limits with headroom, appropriate for a homelab host already running ~15 other containers. **Restart-recovery tested explicitly** (SPEC-BASE.md Section 53 "Reliability"): `docker compose restart api` (health/ready both OK immediately after); `docker compose restart mysql` (API's `/ready` recovered to `200` on its own once MySQL came back healthy, no manual API restart needed -- confirms the existing `PingContext`-based readiness check does its job); `docker compose stop` + `docker compose start` (full stack down/up, both containers healthy again, test user's `prelogin` call returned the *real* stored salt, not the anti-enumeration fake, proving MySQL data survived intact). Stack was torn down with plain `docker compose down` (no `-v`) after verification per this sprint's instructions -- **not left running**.
+- **Self-hosted GitHub Runner** (SPEC-BASE.md Section 42): **not implemented, explicitly out of scope per this sprint's own brief** ("optional and not a priority"). CI continues to run entirely on GitHub-hosted runners, which the spec itself says is sufficient ("The application must NOT depend on a self-hosted runner for normal development CI"). Future work if ever wanted: register a runner on MACMINI (`actions-runner` service, homelab-scoped labels), point `backend.yml`'s Docker-build job at it to build/push images directly to the homelab host -- deliberately not attempted here since it adds a persistent extra process/attack surface for a single-repo CI workload that GitHub-hosted runners already handle fine, matching Section 60's "fewer moving parts" principle.
+- **README final pass**: rewrote the "Getting started" section as literal `git clone` → `cp .env.example .env` → `docker compose up -d` → `curl /health`, explicit about what needs editing in `.env` for anything beyond pure localhost dev (SERVER_PEPPER/DB_PASSWORD/DB_ROOT_PASSWORD). Added "Resource footprint" (the measured table above) and "Backup & restore" sections. Updated the top-of-file status line to reflect all 8 sprints complete instead of the stale "Sprint 1" line that had never been updated since.
+- **Tooling note**: `rtk` (v0.43.0) was available and used for `git status`/`git log` at the start of this sprint. The bulk of this sprint's shell work was `docker compose`/`docker`/`docker exec`/`mysqldump`/`curl` for infra verification, none of which are part of rtk's git/gh-focused rewrite set -- used directly, consistent with every prior sprint's disclosed fallback pattern.
+- `.env.example` unchanged (no new secrets or config this sprint -- purely Compose/docs). This file updated for Sprint 7 state and the final project summary below.
+
+## Project summary (all 8 sprints complete)
+
+VeilKeeper is a complete, independent implementation of the "Veil Keepers" spec
+(`SPEC-BASE.md`): a zero-knowledge, client-side-encrypted personal vault ("secure notebook,"
+not a traditional password-manager form UI), Go backend + MySQL + Android app, built entirely
+by Claude Code across Sprints 0-7 for direct comparison against a parallel Qoder+Kimi K3
+build of the same spec running alongside it on the same homelab host.
+
+- **Sprint 0** — repo/Docker/CI bootstrap, health/ready endpoints.
+- **Sprint 1** — full auth (register/login/logout/prelogin) with the password-derived
+  MasterKey → AuthKey/WrapKey → wrapped-VDK architecture (CLAUDE.md Decision #1), Argon2id
+  client-side + server-side hashing, rate limiting + account lockout + anti-enumeration.
+- **Sprint 2** — categories + vault items CRUD, client-side AES-256-GCM encryption end to
+  end, strict per-user ownership isolation, Home/Category/Vault-Detail/Add-Item Android UI.
+- **Sprint 3** — secure UX: clipboard auto-clear, auto-lock (background/timeout/screen-off),
+  biometric unlock via Android Keystore (never touches the backend), FLAG_SECURE, Settings
+  screen.
+- **Sprint 4** — client-side global search over already-decrypted in-memory items; zero
+  plaintext query ever reaches the backend (there is no backend search endpoint at all).
+- **Sprint 5** — attachments: pick → compress → encrypt → upload → download → decrypt →
+  preview, opaque server-side blob storage on the local filesystem, CSPRNG-generated
+  filenames (no path-traversal surface), cascade delete of both DB rows and on-disk files.
+- **Sprint 6** — dedicated UI/UX pass: custom "Midnight Vault" indigo theme (light + dark,
+  dynamic color disabled for a predictable brand identity), reusable empty/loading/error
+  state components, accessibility pass (touch targets, content descriptions, live regions),
+  branding fix, cold-start theme-flash fix.
+- **Sprint 7** — homelab deployment hardening: resource limits, MySQL tuning (halved idle
+  RAM via disabling `performance_schema`), documented + verified backup/restore, verified
+  restart-recovery (API/MySQL/full-stack) and real `docker stats` resource numbers, README
+  final pass, self-hosted runner explicitly deferred as disclosed future work.
+
+**End-to-end state**: backend `go test -race -cover ./...` passes (65 tests as of Sprint 5,
+unchanged since -- Sprints 6-7 touched no backend code); Android
+`./gradlew assembleDebug testDebugUnitTest lintDebug` passes (112 unit tests as of Sprint 6,
+0 lint errors); all three GitHub Actions workflows (backend/android/security) green as of the
+last commit touching CI-relevant files; `docker compose up -d` works from a fresh clone with
+zero collision against the parallel Qoder build sharing the same Docker host throughout every
+sprint's manual verification. Every crypto/architecture decision the base spec left
+deliberately ambiguous is resolved and documented in "Resolved Design Decisions" above rather
+than improvised. Every sprint's disclosed testing gaps (Argon2id/Keystore/BiometricPrompt/
+ImageCompressor needing a real Android device/emulator, none available in this sandbox
+environment across all 8 sprints) remain open and should be manually verified on a real
+device before this ships to an actual end user -- this is the single biggest piece of
+unverified work across the whole project, called out consistently sprint over sprint rather
+than glossed over.
