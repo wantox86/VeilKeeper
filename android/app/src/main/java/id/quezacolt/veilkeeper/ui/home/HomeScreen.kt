@@ -33,14 +33,19 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.data.Category
@@ -73,6 +78,28 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel(factory = factory),
 ) {
     val state by viewModel.uiState.collectAsState()
+
+    // Post-launch fix: Home previously only fetched data once (in
+    // HomeViewModel's init), so newly added items never showed up after
+    // navigating back from Add Item without a full app restart. Compose
+    // Navigation keeps this composable's NavBackStackEntry (and therefore
+    // this HomeViewModel) alive on the back stack while Add Item is on top,
+    // so `init` never re-runs on its own -- re-fetching on every ON_RESUME
+    // of this screen's lifecycle owner (fires on return from Add Item, and
+    // on app foreground/backgrounded-then-resumed) is the simplest fix that
+    // needs no new state-management library and matches the existing MVVM
+    // shape (ViewModel owns the fetch, screen just reacts to lifecycle).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshSilently()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val defaultCategoryId = state.categories.firstOrNull()?.id
     val screenState: HomeScreenState = when {
         state.isLoading -> HomeScreenState.Loading
@@ -103,17 +130,23 @@ fun HomeScreen(
             when (current) {
                 is HomeScreenState.Loading -> VeilKeeperLoading(modifier = Modifier.padding(padding), label = "Loading your vault…")
                 is HomeScreenState.Error -> VeilKeeperErrorState(message = current.message, modifier = Modifier.padding(padding), onRetry = viewModel::refresh)
-                is HomeScreenState.Content -> HomeContent(
-                    padding = padding,
-                    categories = state.categories,
-                    recentItems = state.recentItems,
-                    searchQuery = state.searchQuery,
-                    isSearching = state.isSearching,
-                    searchResults = state.searchResults,
-                    onSearchQueryChange = viewModel::onSearchQueryChange,
-                    onOpenCategory = onOpenCategory,
-                    onOpenItem = onOpenItem,
-                )
+                is HomeScreenState.Content -> PullToRefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = viewModel::onPullToRefresh,
+                    modifier = Modifier.padding(padding),
+                ) {
+                    HomeContent(
+                        padding = PaddingValues(0.dp),
+                        categories = state.categories,
+                        recentItems = state.recentItems,
+                        searchQuery = state.searchQuery,
+                        isSearching = state.isSearching,
+                        searchResults = state.searchResults,
+                        onSearchQueryChange = viewModel::onSearchQueryChange,
+                        onOpenCategory = onOpenCategory,
+                        onOpenItem = onOpenItem,
+                    )
+                }
             }
         }
     }

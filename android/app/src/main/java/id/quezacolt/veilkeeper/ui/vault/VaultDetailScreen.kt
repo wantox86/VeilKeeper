@@ -4,6 +4,7 @@ package id.quezacolt.veilkeeper.ui.vault
 
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrokenImage
@@ -40,7 +42,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -215,7 +220,10 @@ private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: Attachm
                 Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(Spacing.xs))
             }
-            Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxWidth().height(200.dp).clipToBounds(),
+                contentAlignment = Alignment.Center,
+            ) {
                 when {
                     attachmentId == null -> BrokenImagePlaceholder("Invalid attachment reference")
                     attachmentState == null || attachmentState is AttachmentImageState.Loading -> CircularProgressIndicator()
@@ -225,7 +233,7 @@ private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: Attachm
                             BitmapFactory.decodeByteArray(attachmentState.bytes, 0, attachmentState.bytes.size)
                         }
                         if (bitmap != null) {
-                            Image(bitmap = bitmap.asImageBitmap(), contentDescription = block.label ?: "Attachment image")
+                            ZoomableAttachmentImage(bitmap = bitmap.asImageBitmap(), contentDescription = block.label ?: "Attachment image")
                         } else {
                             BrokenImagePlaceholder("Could not decode image")
                         }
@@ -234,6 +242,52 @@ private fun AttachmentImageCard(block: ContentBlockDto, attachmentState: Attachm
             }
         }
     }
+}
+
+/**
+ * Post-launch fix: pinch-to-zoom + pan for the attachment preview
+ * (SPEC-BASE.md Section 20). A single [detectTransformGestures] pointer
+ * handler drives both scale and pan together from the same multi-touch
+ * gesture stream, rather than pairing it with a separate single-finger
+ * `draggable`/pan-only detector -- two independent gesture detectors on the
+ * same composable is exactly the pattern that caused a real pinch/pan
+ * conflict bug in an unrelated project (signPdf's pinch-to-resize), because
+ * competing detectors can each partially consume the same pointer events.
+ * `detectTransformGestures` reports pan/zoom/rotation as one combined
+ * per-frame delta, so there is nothing to arbitrate between here.
+ *
+ * Scale is clamped to `1f..5f` (1f = fit, matching the card's default
+ * un-zoomed state). Panning only takes effect once zoomed in
+ * (`scale > 1f`); zooming back out to `1f` snaps the pan offset back to
+ * zero so the image doesn't stay off-center the next time the card is
+ * re-zoomed. `Modifier.clipToBounds()` on the parent [Box] keeps the zoomed
+ * image contained within the existing 200dp preview area rather than
+ * bleeding into neighboring content blocks.
+ */
+@Composable
+private fun ZoomableAttachmentImage(bitmap: androidx.compose.ui.graphics.ImageBitmap, contentDescription: String?) {
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    Image(
+        bitmap = bitmap,
+        contentDescription = contentDescription,
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    scale = newScale
+                    offset = if (newScale > 1f) offset + pan else Offset.Zero
+                }
+            }
+            .graphicsLayer(
+                scaleX = scale,
+                scaleY = scale,
+                translationX = offset.x,
+                translationY = offset.y,
+            ),
+    )
 }
 
 @Composable

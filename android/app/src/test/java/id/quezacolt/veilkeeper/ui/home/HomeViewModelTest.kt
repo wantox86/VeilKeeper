@@ -117,4 +117,80 @@ class HomeViewModelTest {
         assertFalse(viewModel.uiState.value.isSearching)
         assertEquals(1, viewModel.uiState.value.recentItems.size)
     }
+
+    // Post-launch fix: Home auto-refresh on return-to-screen (see HomeScreen's
+    // ON_RESUME LifecycleEventObserver calling refreshSilently()).
+
+    @Test
+    fun `refreshSilently picks up items added after the initial load, without touching isLoading`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("Work").getOrThrow()
+            val viewModel = HomeViewModel(repository)
+            advanceUntilIdle()
+            assertEquals(0, viewModel.uiState.value.recentItems.size)
+
+            // Simulates a new item being added from the Add Item screen while
+            // Home was on the back stack, then the user navigating back.
+            repository.createItem(cat.id, "New Item", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(1, state.recentItems.size)
+            assertEquals("New Item", state.recentItems.first().title)
+            // Silent refresh must never flip on the full-screen loading state --
+            // that would flash the whole screen away on every back-navigation.
+            assertFalse(state.isLoading)
+            assertFalse(state.isRefreshing)
+        }
+
+    @Test
+    fun `refreshSilently is a no-op while a refresh is already in flight`() = runTest(mainDispatcherRule.testDispatcher) {
+        val viewModel = HomeViewModel(repository)
+        // Called synchronously right after construction, before advanceUntilIdle
+        // lets init's own refresh() coroutine complete -- mirrors HomeScreen's
+        // ON_RESUME firing around the same time as the ViewModel's init block.
+        val callsBeforeGuardedCall = api.listVaultItemsCallCount
+        viewModel.refreshSilently()
+        assertEquals(callsBeforeGuardedCall, api.listVaultItemsCallCount)
+
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    // Post-launch fix: pull-to-refresh gesture (HomeScreen's PullToRefreshBox).
+
+    @Test
+    fun `onPullToRefresh sets and clears isRefreshing without ever setting isLoading`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val viewModel = HomeViewModel(repository)
+            advanceUntilIdle()
+            assertFalse(viewModel.uiState.value.isRefreshing)
+
+            viewModel.onPullToRefresh()
+            // Immediately after the call (before the coroutine completes),
+            // isRefreshing must already be true so the pull indicator shows up
+            // right away -- and isLoading must stay false so PullToRefreshBox's
+            // content isn't swapped out for the full-screen loader mid-gesture.
+            assertTrue(viewModel.uiState.value.isRefreshing)
+            assertFalse(viewModel.uiState.value.isLoading)
+
+            advanceUntilIdle()
+            assertFalse(viewModel.uiState.value.isRefreshing)
+        }
+
+    @Test
+    fun `onPullToRefresh picks up newly added items`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val viewModel = HomeViewModel(repository)
+        advanceUntilIdle()
+        assertEquals(0, viewModel.uiState.value.recentItems.size)
+
+        repository.createItem(cat.id, "Pulled Item", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+        viewModel.onPullToRefresh()
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.uiState.value.recentItems.size)
+        assertEquals("Pulled Item", viewModel.uiState.value.recentItems.first().title)
+    }
 }

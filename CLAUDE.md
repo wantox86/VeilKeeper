@@ -401,6 +401,73 @@ Delivered (`docker-compose.yml`, `README.md`; no backend/Android code changes --
 - **Tooling note**: `rtk` (v0.43.0) was available and used for `git status`/`git log` at the start of this sprint. The bulk of this sprint's shell work was `docker compose`/`docker`/`docker exec`/`mysqldump`/`curl` for infra verification, none of which are part of rtk's git/gh-focused rewrite set -- used directly, consistent with every prior sprint's disclosed fallback pattern.
 - `.env.example` unchanged (no new secrets or config this sprint -- purely Compose/docs). This file updated for Sprint 7 state and the final project summary below.
 
+**Post-launch fixes (batch 1) — complete.** Android-only bug-fix/UX-improvement batch based on
+real feedback from using the app on a physical device after all 8 sprints shipped -- not a new
+sprint, not a new feature, `backend/` untouched (verified via `git status`; `docker ps` was
+checked up front, `veilkeeper-api`/`veilkeeper-mysql` already running alongside the Qoder
+`vk-sprint3` stack with zero collision, nothing needed to be brought up/down for this batch).
+
+1. **Home screen didn't auto-refresh after adding a new item.** Root cause confirmed: `HomeViewModel.refresh()` only ran once, from `init`. Compose Navigation keeps a screen's `NavBackStackEntry` (and its ViewModel) alive while it's lower on the back stack, so navigating Home → Add Item → back never re-ran `init`. Fix: `HomeScreen` now attaches a `LifecycleEventObserver` (via `DisposableEffect(LocalLifecycleOwner.current)`) that calls a new `HomeViewModel.refreshSilently()` on every `ON_RESUME` -- covers both "navigated back from Add Item" and "app resumed from background". `refreshSilently()` re-fetches without touching `isLoading`/`isRefreshing` (no loading-flash on every back-navigation, matches the existing decrypted-data-already-in-memory instant feel) and is guarded to skip if a fetch is already in flight, avoiding a duplicate call right on top of `init`'s own initial `refresh()`. No new state-management library -- same ViewModel-owns-the-fetch shape as every prior sprint.
+2. **Pull-to-refresh added to Home.** `androidx.compose.material3.pulltorefresh.PullToRefreshBox` (stable component, `@ExperimentalMaterial3Api`-gated API, available since material3 1.3.0 -- already satisfied by the existing Compose BOM `2024.10.01` → material3 `1.3.1`, no version bump needed) now wraps `HomeContent`. New `HomeUiState.isRefreshing` field is kept **separate** from `isLoading` specifically so a manual pull-refresh shows the small top indicator over existing content instead of swapping to the full-screen `VeilKeeperLoading` state (which `isLoading` still drives, unchanged, for the initial load / explicit Retry-button path).
+3. **Pinch-to-zoom + pan added to the attachment image preview** (`VaultDetailScreen.kt`'s `AttachmentImageCard`, Sprint 5's `Image` composable, now wrapped as `ZoomableAttachmentImage`). Uses a single `Modifier.pointerInput { detectTransformGestures { ... } }` driving both `scale` (`graphicsLayer`, clamped `1f..5f`) and `offset`/pan together from the same combined per-frame gesture delta -- deliberately **not** paired with a second independent drag/pan detector on the same composable, since two competing gesture detectors on one node is exactly what caused a real pinch/pan conflict bug in an unrelated project (signPdf's pinch-to-resize). `detectTransformGestures` reports pan+zoom+rotation as one already-arbitrated delta, so there's nothing to coordinate. Offset snaps back to zero once zoomed back out to `1f` scale; the parent `Box` gained `Modifier.clipToBounds()` so the zoomed image stays inside the existing 200dp preview card instead of bleeding into neighboring content blocks.
+4. **Default auto-lock timeout changed from `FIVE_MINUTES` to `IMMEDIATE`** (`AutoLockTimeout.DEFAULT`, `data/AutoLockTimeout.kt`). `SettingsRepository`/`AutoLockTimeout.fromName()` only fall back to `DEFAULT` when nothing has been persisted yet (`SettingsStorage.getString` returns `null`) -- so this **only affects fresh installs / never-touched Settings state**; anyone with an existing explicit saved preference (including one that happened to match the old `FIVE_MINUTES` default) keeps it untouched, no forced migration, per this batch's own scope instructions. Chose "change the default, don't force-migrate" over the alternative (resetting everyone to Immediately) since the latter would silently override a deliberate user choice, which is a bigger behavior change than what was asked.
+
+Testing: `HomeViewModelTest` gained 4 new cases covering `refreshSilently()` (picks up newly-added
+items, never sets `isLoading`/`isRefreshing`, no-ops while a fetch is already in flight) and
+`onPullToRefresh()` (`isRefreshing` true immediately then clears, `isLoading` never set, newly
+added items picked up) -- these are the two new refresh-trigger code paths and are fully
+unit-testable on the host JVM against the existing `FakeVaultApi`. `AutoLockTimeout.DEFAULT`
+change needed no new test -- `SettingsRepositoryTest`/`AutoLockManagerTest`/`AutoLockPolicyTest`
+already asserted against `AutoLockTimeout.DEFAULT` symbolically rather than hardcoding
+`FIVE_MINUTES`, so they pass unchanged and now exercise `IMMEDIATE` as the default. Pinch-to-zoom
+and pull-to-refresh gesture *feel* are inherently UI-interaction-level and weren't given new unit
+tests (same category as every prior sprint's disclosed BitmapFactory/Keystore/BiometricPrompt
+gaps) -- see the emulator verification note below for what was actually exercised visually.
+`./gradlew assembleDebug testDebugUnitTest lintDebug`: all green, **116 unit tests passing** (up
+from 112), **0 lint errors**, same 16 pre-existing warnings as Sprint 6 (no new warnings
+introduced).
+
+**Emulator verification -- actually performed, first time across this whole project**: unlike
+every prior sprint (no device/emulator available in the sandbox at the time), this batch's sandbox
+had Android cmdline-tools + a pre-existing AVD (`veilkeeper_test`, Pixel 6 / API 35 / arm64-v8a)
+already set up. Booted headless (`-no-window -gpu swiftshader_indirect`), installed the real debug
+APK (`adb install`), and drove it via `adb shell input tap/text/swipe` + `uiautomator dump` (XML
+view-hierarchy inspection instead of pixel screenshots -- `adb shell screencap` returns solid black
+for this app, because `FLAG_SECURE` (Sprint 2's screenshot protection) blocks OS-level screen
+capture too, not just third-party screenshot apps; this is itself a confirmation that
+`FLAG_SECURE` is working correctly, not a bug). **Verified for real, end-to-end, against the live
+`veilkeeper-api`/`veilkeeper-mysql` stack already running on the host (reachable at the emulator's
+`10.0.2.2:18091` alias)**:
+- Registered a real test account, logged in (full Argon2id/HKDF/AES-GCM key hierarchy actually ran
+  on-device, not a fake), landed on Home.
+- **Item 1 (auto-refresh)**: added a new vault item via Add Item, tapped Save (which pops back to
+  Home) -- Home's category tile immediately read "Common: 1 item" and the new item appeared in
+  Recent, with **no manual refresh, no app restart**. This is the exact bug being fixed, confirmed
+  fixed on-device, not just by unit test.
+- **Item 4 (default auto-lock)**: on this same fresh install (Settings never touched), pressed
+  Home to background the app and immediately relaunched it -- landed on the "Vault locked" Unlock
+  screen right away, confirming `IMMEDIATE` is really the effective default end-to-end (not just
+  correct in isolation per `SettingsRepositoryTest`).
+- **Item 2 (pull-to-refresh)**: sent a swipe-down gesture on Home via `adb shell input swipe`;
+  confirmed no crash (checked `adb logcat --pid=<app>` for fatal/exception/crash, none found) and
+  the screen remained on Home with all data intact afterward. **Could not visually confirm the
+  pull indicator itself renders/animates correctly** -- `uiautomator dump`'s accessibility tree
+  doesn't expose that, and screenshots are blocked as noted above; this is a genuine remaining gap,
+  not a "yes it definitely renders right" claim.
+- **Item 3 (pinch-to-zoom)**: **not exercised on-device this batch** -- doing so needs an actual
+  image attachment (requires either seeding the emulator's media store or driving the system image
+  picker UI) plus synthetic multi-touch pinch gesture injection, which plain `adb shell input`
+  cannot do (no native multi-pointer gesture support; would need something like `monkeyrunner`,
+  `uiautomator`'s multi-pointer API from an instrumented test, or a Compose UI test with
+  `performTouchInput { pinch(...) }`). Given the time available this batch, this was judged not
+  worth building bespoke instrumentation for a single gesture check -- verified by code review only
+  (the `detectTransformGestures` + `graphicsLayer` wiring is straightforward and mirrors the
+  well-established pattern for this exact use case). **Should be manually pinch-tested on a real
+  device before considering this item done**, same disclosure category as every prior sprint's
+  BitmapFactory/Keystore/BiometricPrompt gaps.
+
+`.env.example` unchanged (no new secrets, no backend changes). This file updated for this batch.
+
 ## Project summary (all 8 sprints complete)
 
 VeilKeeper is a complete, independent implementation of the "Veil Keepers" spec

@@ -13,7 +13,17 @@ enum class AutoLockTimeout(val millis: Long, val label: String) {
     ;
 
     companion object {
-        val DEFAULT = FIVE_MINUTES
+        // Post-launch fix: default changed from FIVE_MINUTES to IMMEDIATE
+        // per user feedback after real-device use -- a vault app's safer
+        // default is "lock as soon as it's backgrounded" rather than
+        // leaving a 5-minute window unlocked. Only affects fresh
+        // installs/never-configured state: fromName() only falls back to
+        // DEFAULT when nothing has been persisted yet (storage.getString
+        // returns null), so anyone with an existing saved preference
+        // (including a prior install whose stored default was
+        // FIVE_MINUTES and was never explicitly changed) keeps exactly
+        // what they had -- no forced migration, per this batch's scope.
+        val DEFAULT = IMMEDIATE
 
         fun fromName(name: String?): AutoLockTimeout = entries.find { it.name == name } ?: DEFAULT
     }
