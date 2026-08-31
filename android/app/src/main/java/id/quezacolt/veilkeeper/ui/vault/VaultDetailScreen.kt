@@ -16,12 +16,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrokenImage
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Card
@@ -30,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -47,12 +51,16 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.VeilKeeperApplication
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
+import id.quezacolt.veilkeeper.ui.components.VeilKeeperConfirmDeleteDialog
 import id.quezacolt.veilkeeper.ui.components.VeilKeeperErrorState
 import id.quezacolt.veilkeeper.ui.components.VeilKeeperLoading
 import id.quezacolt.veilkeeper.ui.components.VeilKeeperStateCrossfade
@@ -73,6 +81,16 @@ private sealed interface DetailScreenState {
  * after the user-configured delay (Settings screen). Sprint 5: "image"
  * blocks render as an [AttachmentImageCard] instead of a text row (Section
  * 20's mockup: "Screenshot [encrypted image preview]").
+ *
+ * Post-launch fixes batch 2: item #4 adds an edit mode (Edit button ->
+ * title + add/remove/change blocks, reusing Add Item's
+ * `AddBlockRow`/`ContentPreviewRow` -- see `ContentBlockEditingComponents.kt`
+ * -- -> Save re-encrypts and PUTs via the existing `VaultRepository.updateItem`);
+ * item #2 wraps the Delete Item action (and, in edit mode, removing an
+ * "image" block -- a real, immediate attachment delete, see
+ * `VaultDetailViewModel.removeEditBlock`'s doc comment for why that one
+ * specifically needs confirmation and plain draft-block removal doesn't) in
+ * [VeilKeeperConfirmDeleteDialog].
  */
 @Composable
 fun VaultDetailScreen(
@@ -82,6 +100,13 @@ fun VaultDetailScreen(
     viewModel: VaultDetailViewModel = viewModel(factory = factory),
 ) {
     val state by viewModel.uiState.collectAsState()
+    var showDeleteItemDialog by remember { mutableStateOf(false) }
+    // Index into state.editBlocks of an image block pending a confirmed
+    // removal (Post-launch fixes batch 2, item #2) -- null means no dialog
+    // is showing. Only image-block removal goes through this (it's a real,
+    // immediate server-side attachment delete); text/secret/note block
+    // removal in the edit draft is unconfirmed, same as Add Item.
+    var pendingRemoveImageIndex by remember { mutableStateOf<Int?>(null) }
 
     LaunchedEffect(state.deleted) {
         if (state.deleted) onDeleted()
@@ -94,25 +119,58 @@ fun VaultDetailScreen(
         else -> DetailScreenState.Loading
     }
 
+    if (showDeleteItemDialog) {
+        VeilKeeperConfirmDeleteDialog(
+            title = "Delete this item?",
+            message = "This permanently deletes \"${state.item?.title?.ifBlank { "(untitled)" } ?: "this item"}\" and all its content, including any attachments. This cannot be undone.",
+            onConfirm = {
+                showDeleteItemDialog = false
+                viewModel.delete()
+            },
+            onDismiss = { showDeleteItemDialog = false },
+        )
+    }
+
+    pendingRemoveImageIndex?.let { index ->
+        VeilKeeperConfirmDeleteDialog(
+            title = "Delete this attachment?",
+            message = "This permanently deletes the attached image. This cannot be undone.",
+            onConfirm = {
+                pendingRemoveImageIndex = null
+                viewModel.removeEditBlock(index)
+            },
+            onDismiss = { pendingRemoveImageIndex = null },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        state.item?.title?.ifBlank { "(untitled)" } ?: "Vault Item",
+                        if (state.isEditing) "Edit item" else state.item?.title?.ifBlank { "(untitled)" } ?: "Vault Item",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { if (state.isEditing) viewModel.cancelEdit() else onBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
                     if (state.item != null) {
-                        IconButton(onClick = viewModel::delete) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Delete item")
+                        if (state.isEditing) {
+                            IconButton(onClick = viewModel::saveEdit, enabled = !state.isSavingEdit) {
+                                Icon(Icons.Filled.Check, contentDescription = "Save changes")
+                            }
+                        } else {
+                            IconButton(onClick = viewModel::startEdit) {
+                                Icon(Icons.Filled.Edit, contentDescription = "Edit item")
+                            }
+                            IconButton(onClick = { showDeleteItemDialog = true }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete item")
+                            }
                         }
                     }
                 },
@@ -123,16 +181,89 @@ fun VaultDetailScreen(
             when (current) {
                 is DetailScreenState.Loading -> VeilKeeperLoading(modifier = Modifier.padding(padding))
                 is DetailScreenState.Error -> VeilKeeperErrorState(message = current.message, modifier = Modifier.padding(padding), onRetry = viewModel::refresh)
-                is DetailScreenState.Content -> LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.md)) {
-                    items(current.item.content) { block ->
-                        if (block.type == "image") {
-                            AttachmentImageCard(block, state.attachmentImages[block.value.toLongOrNull()], onLoad = viewModel::loadAttachmentImage)
-                        } else {
-                            ContentBlockCard(block)
+                is DetailScreenState.Content -> if (state.isEditing) {
+                    VaultDetailEditContent(
+                        padding = padding,
+                        state = state,
+                        onTitleChange = viewModel::onEditTitleChange,
+                        onAddBlock = viewModel::addEditBlock,
+                        onAddImageBlock = viewModel::addEditImageBlock,
+                        onRemoveBlock = { index, block ->
+                            if (block.type == "image") pendingRemoveImageIndex = index else viewModel.removeEditBlock(index)
+                        },
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.md)) {
+                        items(current.item.content) { block ->
+                            if (block.type == "image") {
+                                AttachmentImageCard(block, state.attachmentImages[block.value.toLongOrNull()], onLoad = viewModel::loadAttachmentImage)
+                            } else {
+                                ContentBlockCard(block)
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VaultDetailEditContent(
+    padding: androidx.compose.foundation.layout.PaddingValues,
+    state: VaultDetailUiState,
+    onTitleChange: (String) -> Unit,
+    onAddBlock: (type: String, label: String?, value: String) -> Unit,
+    onAddImageBlock: (filename: String, mimeType: String, bytes: ByteArray) -> Unit,
+    onRemoveBlock: (index: Int, block: ContentBlockDto) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().padding(padding).padding(Spacing.md)) {
+        OutlinedTextField(
+            value = state.editTitle,
+            onValueChange = onTitleChange,
+            label = { Text("Title") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(Spacing.md))
+
+        AddBlockRow(onAdd = onAddBlock, onAddImage = onAddImageBlock)
+        Spacer(Modifier.height(Spacing.md))
+
+        Text("Content", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(Spacing.xs))
+        if (state.editBlocks.isEmpty()) {
+            Text(
+                "Nothing here yet -- pick a type above and add a block.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = Spacing.sm),
+            )
+        }
+        LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+            itemsIndexed(state.editBlocks) { index, block ->
+                ContentPreviewRow(
+                    primary = block.label?.takeIf { it.isNotBlank() } ?: block.type.replaceFirstChar { it.uppercase() },
+                    secondary = if (block.type == "secret") "•".repeat(minOf(block.value.length, 12).coerceAtLeast(6)) else block.value,
+                    onRemove = { onRemoveBlock(index, block) },
+                )
+            }
+        }
+
+        state.editErrorMessage?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .padding(top = Spacing.sm)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
+
+        if (state.isSavingEdit) {
+            Spacer(Modifier.height(Spacing.sm))
+            CircularProgressIndicator(modifier = Modifier.size(18.dp))
         }
     }
 }

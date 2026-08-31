@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.fragment.app.FragmentActivity
@@ -70,7 +71,7 @@ class MainActivity : FragmentActivity() {
 
         val app = application as VeilKeeperApplication
         val vaultCrypto = VaultCrypto(Argon2idMasterKeyDeriver())
-        val authRepository = AuthRepository(NetworkModule.authApi, vaultCrypto)
+        val authRepository = AuthRepository(NetworkModule.authApi, vaultCrypto, sessionStore = app.persistedSessionStore)
         val vaultRepository = VaultRepository(NetworkModule.vaultApi)
         val deviceIdentifier = DeviceIdentity.getOrCreate(applicationContext)
         val authViewModelFactory = AuthViewModelFactory(authRepository, deviceIdentifier)
@@ -109,14 +110,52 @@ fun VeilKeeperApp(
         val current = navController.currentDestination?.route
         when (lockState) {
             VaultLockState.LOCKED -> if (current != ROUTE_UNLOCK) navController.navigate(ROUTE_UNLOCK)
-            VaultLockState.UNLOCKED -> if (current == ROUTE_UNLOCK) navController.popBackStack()
+            VaultLockState.UNLOCKED -> if (current == ROUTE_UNLOCK) {
+                // Post-launch fixes batch 2, item #1: popBackStack() alone
+                // (the pre-batch behavior) correctly returns to wherever
+                // Unlock was pushed from (Home, Category, Vault Detail --
+                // preserving deep nav position) for the normal in-app
+                // auto-lock case, so that stays the primary path. But found
+                // via real on-device testing (force-stop -> relaunch ->
+                // Unlock -> enter correct password) that it silently
+                // no-ops -- returns false, does nothing -- when Unlock is
+                // the graph's *start* destination (this batch's new
+                // process-restart-into-Unlock case): there is nothing
+                // beneath it on the back stack to pop back to, so the app
+                // stayed stuck showing "Vault locked" even though
+                // AuthSessionHolder had already flipped to UNLOCKED. Only
+                // in that fallback case, navigate to Home explicitly.
+                val poppedBackToPreviousScreen = navController.popBackStack()
+                if (!poppedBackToPreviousScreen) {
+                    navController.navigate(ROUTE_HOME) { popUpTo(ROUTE_UNLOCK) { inclusive = true } }
+                }
+            }
             VaultLockState.LOGGED_OUT -> if (current != ROUTE_LOGIN && current != ROUTE_REGISTER) {
                 navController.navigate(ROUTE_LOGIN) { popUpTo(0) { inclusive = true } }
             }
         }
     }
 
-    NavHost(navController = navController, startDestination = ROUTE_LOGIN) {
+    // Post-launch fixes batch 2, item #1: pick the start destination from
+    // whatever AuthSessionHolder.lockState already is at first composition
+    // (VeilKeeperApplication.onCreate has already run restoreLocked() by
+    // this point, before setContent) instead of always hardcoding Login --
+    // this is what actually avoids a Login-screen flash before the
+    // LaunchedEffect above redirects to Unlock. `remember` (not
+    // `collectAsState`) is deliberate: this must be read exactly once, at
+    // startup, not re-evaluated on every later lock/unlock transition
+    // (those are handled by the LaunchedEffect above; NavHost's own
+    // `startDestination` is a one-time initial-composition value in
+    // Navigation Compose, changing it later has no effect anyway).
+    val startDestination = remember {
+        when (AuthSessionHolder.lockState.value) {
+            VaultLockState.LOCKED -> ROUTE_UNLOCK
+            VaultLockState.UNLOCKED -> ROUTE_HOME
+            VaultLockState.LOGGED_OUT -> ROUTE_LOGIN
+        }
+    }
+
+    NavHost(navController = navController, startDestination = startDestination) {
         composable(ROUTE_LOGIN) {
             LoginScreen(
                 factory = authFactory,

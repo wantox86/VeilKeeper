@@ -138,4 +138,155 @@ class VaultDetailViewModelTest {
 
         assertTrue(viewModel.uiState.value.attachmentImages[999999L] is AttachmentImageState.Error)
     }
+
+    // --- Post-launch fixes batch 2, item #4: edit mode ----------------------
+
+    @Test
+    fun `startEdit seeds the draft from the loaded item`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(
+            cat.id,
+            "GitLab Production",
+            listOf(ContentBlockDto(type = "secret", label = "Token", value = "glpat-xxxxx")),
+        ).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+
+        viewModel.startEdit()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.isEditing)
+        assertEquals("GitLab Production", state.editTitle)
+        assertEquals(1, state.editBlocks.size)
+        assertEquals("glpat-xxxxx", state.editBlocks.first().value)
+    }
+
+    @Test
+    fun `cancelEdit exits edit mode without touching the saved item`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+        viewModel.onEditTitleChange("Changed but not saved")
+
+        viewModel.cancelEdit()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isEditing)
+        assertEquals("Original", state.item?.title)
+    }
+
+    @Test
+    fun `saveEdit re-encrypts and persists the new title and blocks`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "old"))).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+        viewModel.onEditTitleChange("Renamed")
+        viewModel.addEditBlock("text", "New Label", "new value")
+
+        viewModel.saveEdit()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isEditing)
+        assertFalse(state.isSavingEdit)
+        assertEquals("Renamed", state.item?.title)
+        assertEquals(2, state.item?.content?.size)
+
+        // And it actually persisted server-side, not just local state.
+        val reloaded = repository.getItem(item.id).getOrThrow()
+        assertEquals("Renamed", reloaded.title)
+    }
+
+    @Test
+    fun `saveEdit rejects a blank title without calling the repository`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+        viewModel.onEditTitleChange("   ")
+
+        viewModel.saveEdit()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.isEditing) // still in edit mode -- save was rejected
+        assertTrue(state.editErrorMessage != null)
+        assertEquals("Original", repository.getItem(item.id).getOrThrow().title)
+    }
+
+    @Test
+    fun `saveEdit rejects an empty block list`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+        viewModel.removeEditBlock(0)
+
+        viewModel.saveEdit()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.isEditing)
+        assertTrue(state.editErrorMessage != null)
+    }
+
+    @Test
+    fun `removeEditBlock removes a plain text block locally without any repository call`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(
+            cat.id,
+            "Two blocks",
+            listOf(ContentBlockDto(type = "note", value = "a"), ContentBlockDto(type = "note", value = "b")),
+        ).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+
+        viewModel.removeEditBlock(0)
+
+        assertEquals(1, viewModel.uiState.value.editBlocks.size)
+        assertEquals("b", viewModel.uiState.value.editBlocks.first().value)
+        // Not saved yet -- the underlying item is untouched.
+        assertEquals(2, repository.getItem(item.id).getOrThrow().content.size)
+    }
+
+    @Test
+    fun `addEditImageBlock uploads immediately and appends an image block to the draft`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "With image", emptyList()).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+
+        viewModel.addEditImageBlock("shot.jpg", "image/jpeg", "fake-bytes".toByteArray())
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.isSavingEdit)
+        assertEquals(1, state.editBlocks.size)
+        assertEquals("image", state.editBlocks.first().type)
+        assertTrue(state.editBlocks.first().value.toLongOrNull() != null)
+    }
+
+    @Test
+    fun `removeEditBlock on an image block deletes the attachment server-side, not just locally`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "With image", emptyList()).getOrThrow()
+        val ref = repository.uploadAttachment(item.id, "shot.jpg", "image/jpeg", "fake-bytes".toByteArray()).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+        viewModel.startEdit()
+        viewModel.addEditBlock("image", "shot.jpg", ref.id.toString())
+        // Overwrite editBlocks to represent this attachment as an existing "image" block (simulating startEdit() having seeded it from a saved item).
+        viewModel.removeEditBlock(0)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.editBlocks.isEmpty())
+        // The attachment must actually be gone server-side.
+        assertTrue(repository.downloadAttachment(item.id, ref.id).isFailure)
+    }
 }

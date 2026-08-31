@@ -7,10 +7,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import androidx.lifecycle.ProcessLifecycleOwner
 import id.quezacolt.veilkeeper.data.AndroidClipboardPort
+import id.quezacolt.veilkeeper.data.AuthSessionHolder
 import id.quezacolt.veilkeeper.data.AutoLockManager
 import id.quezacolt.veilkeeper.data.BiometricVaultCache
 import id.quezacolt.veilkeeper.data.ClipboardSecurity
+import id.quezacolt.veilkeeper.data.PersistedSessionStore
 import id.quezacolt.veilkeeper.data.SettingsRepository
+import id.quezacolt.veilkeeper.data.SharedPrefsSessionStorage
 import id.quezacolt.veilkeeper.data.SharedPrefsSettingsStorage
 import id.quezacolt.veilkeeper.data.VaultBiometricManager
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +39,15 @@ class VeilKeeperApplication : Application() {
     lateinit var clipboardSecurity: ClipboardSecurity
         private set
 
+    /**
+     * Post-launch fixes batch 2, item #1. Built and wired here (process
+     * start, before any Activity/UI exists) rather than in `MainActivity`,
+     * matching every other Sprint 3 singleton in this class -- see
+     * [PersistedSessionStore]'s doc comment for the full fix rationale.
+     */
+    lateinit var persistedSessionStore: PersistedSessionStore
+        private set
+
     /** Process-lifetime scope for background work with no natural owner (e.g. the clipboard-clear delay). */
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -49,6 +61,18 @@ class VeilKeeperApplication : Application() {
         biometricVaultCache = BiometricVaultCache(this)
         vaultBiometricManager = VaultBiometricManager(biometricVaultCache)
         clipboardSecurity = ClipboardSecurity(AndroidClipboardPort(this), appScope)
+        persistedSessionStore = PersistedSessionStore(SharedPrefsSessionStorage(this))
+
+        // Post-launch fixes batch 2, item #1: restore state (b) -- "was
+        // logged in before, this is a fresh process" -- as LOCKED, before any
+        // UI exists. `MainActivity`'s NavHost then picks its start
+        // destination directly from AuthSessionHolder.lockState (already
+        // LOCKED by the time setContent runs), so there is no Login-screen
+        // flash. Never restores UNLOCKED -- see AuthSessionHolder.restoreLocked's
+        // doc comment for why this can never skip a real authentication.
+        persistedSessionStore.load()?.let { persisted ->
+            AuthSessionHolder.restoreLocked(persisted.sessionToken, persisted.unwrapMaterial, persisted.email)
+        }
 
         autoLockManager = AutoLockManager(settingsRepository)
         ProcessLifecycleOwner.get().lifecycle.addObserver(autoLockManager)

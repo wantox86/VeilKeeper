@@ -28,6 +28,14 @@ class AuthRepository(
     private val vaultCrypto: VaultCrypto,
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * Post-launch fixes batch 2, item #1: persists (encrypted) exactly what
+     * [AuthSessionHolder.restoreLocked] needs to survive a process kill.
+     * Nullable/optional so existing tests (which have no Android [android.content.Context]
+     * to build a real store with) keep working unchanged -- a null store
+     * just means "this run behaves like before this fix," never a crash.
+     */
+    private val sessionStore: PersistedSessionStore? = null,
 ) {
     sealed class AuthError : Exception() {
         data class InvalidCredentials(override val message: String) : AuthError()
@@ -133,15 +141,22 @@ class AuthRepository(
                 val body = response.body() ?: return@withContext Result.failure(AuthError.ServerError("empty login response"))
                 val wrappedVdkBytes = body.wrappedVdk.fromB64()
                 vdk = vaultCrypto.unwrapVaultDataKey(wrappedVdkBytes, wrapKey)
+                val unwrapMaterial = VdkUnwrapMaterial(kdfSalt = kdfSalt, kdfParams = params, wrappedVdk = wrappedVdkBytes)
+                val trimmedEmail = email.trim()
                 AuthSessionHolder.set(
                     sessionToken = body.sessionToken,
                     vaultDataKey = vdk,
                     // Sprint 3: kept so a later auto-lock (SPEC-BASE.md Section 24)
                     // can be undone by password entry without a network call --
                     // see AuthSessionHolder's VdkUnwrapMaterial doc comment.
-                    unwrapMaterial = VdkUnwrapMaterial(kdfSalt = kdfSalt, kdfParams = params, wrappedVdk = wrappedVdkBytes),
-                    email = email.trim(),
+                    unwrapMaterial = unwrapMaterial,
+                    email = trimmedEmail,
                 )
+                // Post-launch fixes batch 2, item #1: also persist to disk
+                // (encrypted) so a later process kill can restore state (b)
+                // -- see PersistedSessionStore's doc comment. Deliberately
+                // does NOT persist vdk itself.
+                sessionStore?.save(body.sessionToken, unwrapMaterial, trimmedEmail)
                 vdk = null // ownership transferred to AuthSessionHolder; don't wipe it below
 
                 Result.success(Unit)
@@ -190,6 +205,7 @@ class AuthRepository(
         val token = AuthSessionHolder.sessionToken
         if (token == null) {
             AuthSessionHolder.clear()
+            sessionStore?.clear()
             return@withContext Result.success(Unit)
         }
         try {
@@ -201,6 +217,11 @@ class AuthRepository(
             Result.failure(AuthError.NetworkError(e.message ?: "network error"))
         } finally {
             AuthSessionHolder.clear()
+            // Post-launch fixes batch 2, item #1: a full logout must also
+            // wipe the persisted (encrypted) session blob -- otherwise a
+            // process restart after logout would incorrectly restore a
+            // LOCKED state for a session that was just explicitly ended.
+            sessionStore?.clear()
         }
     }
 

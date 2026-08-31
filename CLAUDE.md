@@ -468,6 +468,214 @@ capture too, not just third-party screenshot apps; this is itself a confirmation
 
 `.env.example` unchanged (no new secrets, no backend changes). This file updated for this batch.
 
+**Post-launch fixes (batch 2) — complete.** Android-only again, `backend/` untouched (verified
+via `git status`; `docker ps` up front showed `veilkeeper-api`/`veilkeeper-mysql` already running
+healthy alongside the Qoder `vk-sprint3` stack, zero collision, nothing brought up/down). Four
+items, based on real feedback from using the app on a physical device.
+
+1. **Swipe-from-recent-apps logout bug (the sensitive one) -- root cause confirmed, fixed.**
+   Re-read Sprint 1/3 before touching anything, per this batch's own instruction. Confirmed root
+   cause exactly as suspected: `AuthSessionHolder` (`android/app/.../data/AuthSessionHolder.kt`)
+   was, by original Sprint 1/3 design, **in-memory only** -- a recent-apps swipe kills the Android
+   process (unlike a normal background/`onStop`), wiping the session token, `VdkUnwrapMaterial`
+   (kdf_salt/kdf_params/wrapped_vdk), and email with it. `MainActivity`'s `NavHost` always
+   hardcoded `startDestination = ROUTE_LOGIN`, with no way to distinguish "never logged in" from
+   "was logged in, process just got killed" -- so a killed-and-reopened app always showed Login,
+   forcing a full re-authentication and defeating Sprint 3's offline unlock (which assumed the
+   process was still alive).
+   - **Fix -- state machine**: three states, exactly as scoped -- (a) no persisted session ->
+     Login/Register (`VaultLockState.LOGGED_OUT`), (b) a session was persisted but this is a fresh
+     process with nothing in memory yet -> Unlock (`VaultLockState.LOCKED`, reached via the new
+     `AuthSessionHolder.restoreLocked()`), (c) VDK is live in memory -> Home
+     (`VaultLockState.UNLOCKED`). `restoreLocked()` is deliberately a no-op if a session already
+     exists in memory (never clobbers a newer in-memory state with stale disk state) and **never**
+     sets the VDK -- it only ever transitions to `LOCKED`, so reaching Home from a cold start still
+     always requires a real password entry or a real biometric prompt afterward, identical to
+     Sprint 3's existing background-lock unlock flow. This does not weaken security; it only makes
+     that *existing* offline-unlock capability also survive a full process kill, which Sprint 3
+     couldn't verify at the time (no emulator was available then to catch this gap).
+   - **What's newly persisted, and how**: new `PersistedSessionStore`
+     (`android/app/.../data/PersistedSessionStore.kt`) encrypts (AES-256-GCM) and stores the
+     session token + `kdf_salt`/`kdf_params`/`wrapped_vdk` + email in their own SharedPreferences
+     file (`SharedPrefsSessionStorage`). **The raw VaultDataKey is never persisted here or anywhere
+     new** -- only the already-non-secret `wrapped_vdk`/`kdf_salt`/`kdf_params` triple (routinely
+     sent to/from the server unauthenticated already, per Decision #1) plus the session token
+     (a bearer credential, the one genuinely sensitive field). Encryption key: new
+     `KeystoreSessionCipher` (`android/app/.../crypto/KeystoreSessionCipher.kt`), an Android
+     Keystore AES-256-GCM key **deliberately without `setUserAuthenticationRequired(true)`**
+     (unlike Sprint 3's biometric-gated `KeystoreVdkCipher`) -- this blob must be readable at cold
+     start, before any authentication has happened, purely to answer "does a locked session exist";
+     gating it behind biometric would make password-only unlock (always required as a fallback,
+     even when biometric is enrolled) unreachable after a process kill. Both classes depend on a
+     new `SessionCipherProvider` interface (mirrors the existing `MasterKeyDeriver`/`SettingsStorage`
+     interface-for-testability pattern) so `PersistedSessionStore`'s actual
+     serialize/encrypt/decrypt/deserialize logic is unit-tested for real via a fake plain-AES
+     provider (`FakeSessionCipherProvider`), not just assumed correct -- the untestable-on-host-JVM
+     part is isolated to the thin `KeystoreSessionCipher` adapter itself, same disclosed-gap
+     category as every prior Keystore-touching sprint.
+   - **Wiring**: `AuthRepository` gained an optional `sessionStore: PersistedSessionStore? = null`
+     constructor param (defaults to null so every existing test keeps working unchanged) -- `login()`
+     now also calls `sessionStore?.save(...)` right after `AuthSessionHolder.set(...)`, and
+     `logout()` calls `sessionStore?.clear()` in its `finally` block (a full logout must wipe the
+     persisted blob too, or a later process restart would incorrectly show Unlock for a session
+     that was explicitly ended). `VeilKeeperApplication.onCreate()` builds the real
+     `PersistedSessionStore` and calls `persistedSessionStore.load()?.let { AuthSessionHolder.restoreLocked(...) }`
+     **before** `setContent` runs in `MainActivity` -- so by the time the Compose tree is built,
+     `AuthSessionHolder.lockState` already reflects the restored state. `MainActivity`'s `NavHost`
+     now computes `startDestination` from `AuthSessionHolder.lockState.value` directly (via
+     `remember`, evaluated once) instead of hardcoding `ROUTE_LOGIN`, avoiding a Login-screen flash
+     before the existing global `LaunchedEffect(lockState)` redirect would otherwise kick in.
+   - **Ambiguity resolved without stopping** (documented here per this batch's own instruction,
+     since a security-adjacent design call was made): whether to Keystore-encrypt the persisted
+     session token at all, versus following `DeviceIdentity`'s existing precedent of plain
+     SharedPreferences for "non-secret" data. Decided to encrypt it (via the new non-auth-required
+     Keystore key) because, unlike `DeviceIdentity`'s opaque per-install UUID, the session token is
+     a real bearer credential that alone can call authenticated backend endpoints (though never
+     decrypt vault content without the VDK, and it's time-bounded by the backend's existing
+     `SESSION_TTL_HOURS`) -- worth the one extra Keystore key for defense-in-depth against casual
+     on-device file inspection, without requiring a biometric gate that would break password-only
+     unlock after a process kill.
+   - **Testing**: `AuthSessionHolderTest` gained 6 new cases for `restoreLocked()` (transitions a
+     fresh holder to `LOCKED` never `UNLOCKED`; never sets the VDK; is a no-op against an
+     already-unlocked or already-locked in-memory session; a restored `LOCKED` session unlocks
+     normally via `unlock()`; `clear()` after `restoreLocked()` resets everything). New
+     `PersistedSessionStoreTest` (7 cases): null-when-nothing-saved, full round-trip (including a
+     null email), never leaks the plaintext token/email into the underlying storage strings, `clear()`
+     wipes it, self-heals (returns null, doesn't crash) if the Keystore key becomes unusable out
+     from under it, and overwrite-on-resave. `AuthRepositoryTest` gained 3 new cases: login persists
+     to a real `PersistedSessionStore` (with `FakeSessionCipherProvider`), logout clears it, and a
+     null `sessionStore` (every pre-existing test) still works unchanged. **143 unit tests passing**
+     total (up from 116), all green.
+   - **Emulator verification -- performed, this is the item that mattered most to verify for
+     real, and it caught a real bug unit tests missed**: booted the same pre-existing
+     `veilkeeper_test` AVD (Pixel 6, API 35, headless) used in batch 1, against the same live
+     `veilkeeper-api`/`veilkeeper-mysql` stack. Registered a fresh test account, logged in for real
+     (full on-device Argon2id/HKDF/AES-GCM), landed on Home. Ran
+     `adb shell am force-stop id.quezacolt.veilkeeper` (a harder kill than a recent-apps swipe --
+     force-stop guarantees full process death, which is the actual condition this fix targets) then
+     relaunched via `adb shell am start`. **Confirmed the app landed directly on the "Vault locked"
+     Unlock screen, not Login** -- `uiautomator dump`'s view hierarchy showed the Unlock screen's
+     "Vault locked" text and password field, with the previously-registered email pre-filled, on
+     first launch after the kill, no Login screen frame ever appeared.
+     - **Bug found on this first pass**: entering the correct password and tapping Unlock left the
+       app stuck showing "Vault locked" forever, even though `AuthSessionHolder` had genuinely
+       flipped to `UNLOCKED` (password accepted, no error shown). Root cause: `MainActivity`'s
+       global lock-state effect used bare `navController.popBackStack()` to leave the Unlock
+       screen, which silently returns `false` and does nothing when Unlock is the navigation
+       graph's *start* destination (this batch's new process-restart case) -- there is nothing
+       beneath it on the back stack to pop back to. Pre-batch, this line only ever ran with Unlock
+       pushed on top of an existing screen (the normal in-app auto-lock case), so it always had
+       something to pop back to and the bug never existed before. **Fixed**: now checks
+       `popBackStack()`'s return value and, only if it returned `false`, explicitly
+       `navController.navigate(ROUTE_HOME) { popUpTo(ROUTE_UNLOCK) { inclusive = true } }` --
+       preserves the exact old behavior (return to wherever Unlock was pushed from, e.g. a deep
+       Vault Detail screen) for the normal auto-lock case, and only takes the new explicit-Home
+       path for the process-restart case that didn't exist before this batch. Rebuilt, reinstalled,
+       and re-ran the full kill/relaunch/unlock sequence -- confirmed fixed: unlock now correctly
+       lands on Home with data intact. This is exactly the kind of gap code review and unit tests
+       alone would not have caught (`AuthSessionHolder`'s own state transitions were all correct in
+       isolation; the bug was purely in how `MainActivity` reacted to them via Navigation Compose,
+       which has no host-JVM-testable equivalent).
+     - Re-verified after the fix: correct password -> unlocks straight to Home with all data
+       intact. Re-killed and entered the *wrong* password on Unlock -> stayed locked with a "wrong
+       password" error, confirming the fix doesn't weaken authentication. Also exercised items #2-4
+       live on the same session: added a real vault item (confirms batch 1's Home auto-refresh
+       still works), opened it, triggered the Delete confirmation dialog and tapped Cancel
+       (item survived), entered Edit mode, changed the title, tapped Save, and confirmed the new
+       title persisted server-side by navigating back to Home and re-reading it fresh. This is the
+       strongest evidence available (real process kill, real device, real crypto, a real bug caught
+       and fixed) that item #1 works end-to-end, not just in unit tests.
+
+2. **Confirmation dialogs on Delete actions.** New reusable `VeilKeeperConfirmDeleteDialog`
+   (`android/app/.../ui/components/StateViews.kt`, a standard Material3 `AlertDialog`) applied to
+   every *existing* destructive delete trigger in the app: Vault Detail's "Delete item" button, and
+   (newly added as part of item #4 below) removing an "image" block while editing an item, which is
+   a real, immediate server-side attachment delete (attachments in edit mode are uploaded
+   immediately, not deferred like Add Item -- see `VaultDetailViewModel.removeEditBlock`'s doc
+   comment). **Scope note, not extended beyond what already existed**: category delete
+   (`VaultRepository.deleteCategory`/`VaultApi`) has no UI trigger anywhere in the app as of this
+   batch -- there was never a "delete category" button to add a dialog to, and building one would be
+   new UI scope beyond "add a confirmation dialog," so it was left alone. Removing a *draft* block
+   (not-yet-saved text/secret/note content in Add Item, or in Vault Detail's edit mode before
+   Save) intentionally does **not** get a confirmation dialog -- nothing has been persisted yet at
+   that point, so there's nothing destructive to confirm; this matches how Add Item's block removal
+   already worked pre-batch and avoids friction on a same as it's always been draft edit.
+
+3. **Category screen auto-refresh bug -- same root cause and fix as Home's batch-1 fix, applied
+   here.** Confirmed `CategoryViewModel` never got the `refreshSilently()` fix `HomeViewModel` got
+   in batch 1 -- newly added items in a category didn't show up without leaving and reopening the
+   app, because Compose Navigation keeps `CategoryScreen`'s `NavBackStackEntry` (and its
+   ViewModel) alive on the back stack while Add Item is on top, so `init`'s one-time `refresh()`
+   never re-ran on return. Applied the identical pattern: `CategoryViewModel.refreshSilently()`
+   (re-fetches without touching `isLoading`, guarded against re-entrancy / redundant calls right on
+   top of `init`'s own `refresh()`) plus a `LifecycleEventObserver` on `ON_RESUME` in
+   `CategoryScreen` (`DisposableEffect(LocalLifecycleOwner.current)`), wired exactly like
+   `HomeScreen`'s. New tests in `CategoryViewModelTest`: `refreshSilently` picks up newly-added
+   items without touching `isLoading`, is a no-op while a fetch is in flight, and typing into
+   search never triggers a network call (regression guard, unrelated to this fix but adjacent code).
+
+4. **Vault Detail edit mode.** `VaultDetailViewModel` gained `isEditing`/`editTitle`/`editBlocks`
+   state plus `startEdit()`/`cancelEdit()`/`onEditTitleChange()`/`addEditBlock()`/
+   `addEditImageBlock()`/`removeEditBlock()`/`saveEdit()`. `VaultDetailScreen`'s top bar gets an
+   Edit (pencil) button (hidden while already editing, replaced by a Check/Save button) alongside
+   the existing Delete button. **UI reuse, per this batch's own instruction**: the per-block-type
+   input form (type chips, label/value fields, image picker) and the block list row were extracted
+   out of `AddItemScreen.kt` into a new shared file, `android/app/.../ui/vault/ContentBlockEditingComponents.kt`
+   (`AddBlockRow`, `ContentPreviewRow`, `queryDisplayName`, all `internal`) -- both `AddItemScreen`
+   and the new `VaultDetailEditContent` composable use the exact same components now, zero UI
+   duplicated from scratch.
+   - **Attachment handling decision** (resolved directly, not stopped-and-asked, since it's a pure
+     simplification with no security/architecture impact, matching Section 56 Rule 2's threshold):
+     Add Item's `PendingImage` deferral pattern (upload only happens at final Save, because that
+     screen's item doesn't have a server-side ID yet) is **not** reused in edit mode -- the item
+     being edited already exists, so `addEditImageBlock()` uploads immediately via the existing
+     `VaultRepository.uploadAttachment` and appends the resulting "image" block to the draft right
+     away. This also means removing an image block during editing is a real, immediate
+     `VaultRepository.deleteAttachment` call (not just a local list edit) -- which is exactly why
+     item #2's confirmation dialog applies to it specifically, and not to removing a draft
+     text/secret/note block (which is genuinely still just local, undoable-by-not-saving state).
+   - **Save**: re-encrypts the full draft (title + all blocks, via the existing `VaultItemCrypto`
+     under the hood) and calls the existing `PUT /api/v1/vault/items/{id}` via
+     `VaultRepository.updateItem(itemId, null, title, editBlocks)` -- **no backend changes needed**,
+     this endpoint has existed since Sprint 2 and already accepts a full-content-replace payload.
+     `backend/` is untouched by this whole batch (verified via `git status`).
+   - **Testing**: 8 new `VaultDetailViewModelTest` cases -- `startEdit` seeds the draft from the
+     loaded item, `cancelEdit` discards changes without touching the saved item, `saveEdit`
+     re-encrypts/persists (verified by re-fetching the item fresh from the repository afterward,
+     not just checking in-memory state), `saveEdit` rejects a blank title or an empty block list
+     without calling the repository, `removeEditBlock` on a text block is purely local (no
+     repository call, unsaved item on disk unchanged), `addEditImageBlock` uploads immediately and
+     appends an "image" block, and `removeEditBlock` on an image block actually deletes the
+     attachment server-side (verified via a follow-up `downloadAttachment` call failing). Confirmation
+     dialog *triggering* (item #2) is a Compose-UI-level concern (local `remember` state gating an
+     `AlertDialog`) with no new ViewModel logic to unit-test beyond what's already covered above --
+     verified by code review + the emulator pass below, same category as Sprint 6's "3-line `when`
+     doesn't need a parallel test suite" reasoning.
+
+**Build/verification**: `./gradlew clean assembleDebug testDebugUnitTest lintDebug` -- all green,
+**143 unit tests passing** (up from 116), **0 lint errors**, same 16 pre-existing warnings as every
+prior batch (`GradleDependency` x11, `UnusedResources` x2, `ObsoleteSdkInt` x1,
+`MonochromeLauncherIcon` x1, `DataExtractionRules` x1 -- no new warnings introduced).
+
+**Emulator verification**: the same pre-existing `veilkeeper_test` AVD from batch 1 was still
+available and was used again -- see item #1's dedicated writeup above for the force-stop/relaunch
+Unlock-screen verification (which found and fixed a real navigation bug, not just confirmed the
+happy path) -- this was this batch's priority given its sensitivity. On that same live session,
+items #2-4 were also exercised for real, not just code-reviewed: added a real vault item via Add
+Item (confirmed it appears immediately on Home, i.e. batch 1's auto-refresh fix is undisturbed),
+opened it in Vault Detail, tapped Delete to trigger the new confirmation dialog and tapped Cancel
+(item survived, dialog dismissed cleanly), tapped Edit, changed the title, tapped Save, and
+confirmed the change persisted server-side by navigating back to Home and re-reading the title
+fresh from a new screen. Category screen's own auto-refresh (item #3) was exercised as a side
+effect of the same flow (opening the "Common" category showed the newly-added item without a
+restart). **Not exercised this batch**: adding/removing an *image* block specifically in edit mode
+(needs a real image picker interaction, same category of gap as prior sprints' attachment-picker
+notes) and the biometric unlock path specifically after a process kill (no biometric enrolled on
+this AVD) -- both are code-reviewed only and should be spot-checked on a real device before
+considered fully done, same disclosure category as prior sprints' gaps.
+
+`.env.example` unchanged (no new secrets, no backend changes). This file updated for this batch.
+
 ## Project summary (all 8 sprints complete)
 
 VeilKeeper is a complete, independent implementation of the "Veil Keepers" spec

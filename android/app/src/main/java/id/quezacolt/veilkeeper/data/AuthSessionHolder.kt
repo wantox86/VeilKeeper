@@ -40,12 +40,16 @@ data class VdkUnwrapMaterial(
  * and (Sprint 3) the lock state + non-secret material needed to re-unlock
  * without hitting the network.
  *
- * Still intentionally does NOT persist across process death (see Sprint 1
- * doc comment history) -- if the OS kills the process, the user returns to
- * the Login screen. The one exception is the Keystore-backed biometric VDK
- * cache ([BiometricVaultCache]), which is a separate, deliberately-persisted
- * store precisely because that's the point of biometric unlock surviving a
- * restart -- see CLAUDE.md Resolved Design Decision #3.
+ * The raw [vaultDataKey] itself still NEVER persists across process death --
+ * it only ever lives here, in memory, while the vault is unlocked, exactly
+ * as originally designed. What changed in Post-launch fixes batch 2 (item
+ * #1): [sessionToken]/[unwrapMaterial]/[email] are now *also* persisted
+ * (encrypted, via [PersistedSessionStore]) so a killed-and-restarted process
+ * can call [restoreLocked] and land the user on the Unlock screen instead of
+ * a full Login -- see [PersistedSessionStore]'s doc comment for the full
+ * root-cause analysis and design rationale. This object itself still has no
+ * disk/Context dependency; persistence is the caller's job (see
+ * `AuthRepository.login`/`logout` and `VeilKeeperApplication.onCreate`).
  */
 object AuthSessionHolder {
     @Volatile
@@ -94,6 +98,27 @@ object AuthSessionHolder {
         check(sessionToken != null) { "cannot unlock: no active session" }
         this.vaultDataKey = vaultDataKey
         _lockState.value = VaultLockState.UNLOCKED
+    }
+
+    /**
+     * Restores state (b) of the Login/Unlock/Home startup state machine
+     * (Post-launch fixes batch 2, item #1): "a session was previously
+     * established and persisted, but this is a fresh process with nothing
+     * in memory yet." Called once, at process start
+     * ([id.quezacolt.veilkeeper.VeilKeeperApplication.onCreate]), *before*
+     * any UI is shown -- **never** sets [vaultDataKey] and always lands in
+     * [VaultLockState.LOCKED], not [VaultLockState.UNLOCKED]: restoring from
+     * disk must never bypass a real password/biometric authentication. A
+     * no-op if a session already exists in memory (e.g. this somehow ran
+     * twice, or a fresh login already happened before this was called) --
+     * restoring stale disk state must never clobber a newer in-memory one.
+     */
+    fun restoreLocked(sessionToken: String, unwrapMaterial: VdkUnwrapMaterial, email: String?) {
+        if (_lockState.value != VaultLockState.LOGGED_OUT) return
+        this.sessionToken = sessionToken
+        this.unwrapMaterial = unwrapMaterial
+        this.email = email
+        _lockState.value = VaultLockState.LOCKED
     }
 
     /** Full logout: clears everything, including unwrap material and session token. */

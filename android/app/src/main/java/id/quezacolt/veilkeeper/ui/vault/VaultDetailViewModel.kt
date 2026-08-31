@@ -2,6 +2,7 @@ package id.quezacolt.veilkeeper.ui.vault
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
 import id.quezacolt.veilkeeper.data.VaultRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +23,12 @@ data class VaultDetailUiState(
     val deleted: Boolean = false,
     val errorMessage: String? = null,
     val attachmentImages: Map<Long, AttachmentImageState> = emptyMap(),
+    // Post-launch fixes batch 2, item #4: edit mode.
+    val isEditing: Boolean = false,
+    val editTitle: String = "",
+    val editBlocks: List<ContentBlockDto> = emptyList(),
+    val isSavingEdit: Boolean = false,
+    val editErrorMessage: String? = null,
 )
 
 /**
@@ -85,6 +92,109 @@ class VaultDetailViewModel(
                 onFailure = { AttachmentImageState.Error(it.message ?: "Failed to load image") },
             )
             _uiState.value = _uiState.value.copy(attachmentImages = _uiState.value.attachmentImages + (attachmentId to newState))
+        }
+    }
+
+    // --- Post-launch fixes batch 2, item #4: edit mode ----------------------
+    //
+    // Reuses the exact same content-block form UI as Add Item
+    // (ContentBlockEditingComponents.kt's AddBlockRow/ContentPreviewRow) --
+    // see VaultDetailScreen. Unlike Add Item's `PendingImage` deferral (which
+    // exists only because Add Item's item doesn't have a server-side ID
+    // yet), edit mode's item already exists, so a newly picked image is
+    // uploaded immediately via [addEditImageBlock] -- one less moving part.
+
+    /** Enters edit mode, seeding the draft from the currently-loaded item. No-ops if nothing is loaded yet. */
+    fun startEdit() {
+        val item = _uiState.value.item ?: return
+        _uiState.value = _uiState.value.copy(
+            isEditing = true,
+            editTitle = item.title,
+            editBlocks = item.content,
+            editErrorMessage = null,
+        )
+    }
+
+    /** Discards the draft (any images already uploaded via [addEditImageBlock] during this session are NOT rolled back -- same disclosed limitation as AddItemViewModel.save's doc comment). */
+    fun cancelEdit() {
+        _uiState.value = _uiState.value.copy(isEditing = false, editErrorMessage = null)
+    }
+
+    fun onEditTitleChange(value: String) {
+        _uiState.value = _uiState.value.copy(editTitle = value, editErrorMessage = null)
+    }
+
+    fun addEditBlock(type: String, label: String?, value: String) {
+        if (value.isBlank()) return
+        _uiState.value = _uiState.value.copy(
+            editBlocks = _uiState.value.editBlocks + ContentBlockDto(type = type, label = label?.takeIf { it.isNotBlank() }, value = value),
+            editErrorMessage = null,
+        )
+    }
+
+    /** Uploads [bytes] as a new attachment against this (already-existing) item immediately, then appends the resulting "image" block to the draft. */
+    fun addEditImageBlock(filename: String, mimeType: String, bytes: ByteArray) {
+        _uiState.value = _uiState.value.copy(isSavingEdit = true, editErrorMessage = null)
+        viewModelScope.launch {
+            val result = repository.uploadAttachment(itemId, filename, mimeType, bytes)
+            _uiState.value = result.fold(
+                onSuccess = { ref ->
+                    val block = ContentBlockDto(type = "image", label = filename, value = ref.id.toString())
+                    _uiState.value.copy(isSavingEdit = false, editBlocks = _uiState.value.editBlocks + block)
+                },
+                onFailure = { e -> _uiState.value.copy(isSavingEdit = false, editErrorMessage = "Failed to upload image: ${e.message}") },
+            )
+        }
+    }
+
+    /**
+     * Removes block [index] from the draft. For an "image" block this also
+     * deletes the underlying attachment server-side (attachments in edit
+     * mode are uploaded immediately, see [addEditImageBlock] -- there is no
+     * "pending, not yet real" state to just discard locally, unlike text/
+     * secret/note blocks which are draft-only until [saveEdit]). The screen
+     * is expected to have already confirmed this via
+     * [id.quezacolt.veilkeeper.ui.components.VeilKeeperConfirmDeleteDialog]
+     * before calling this for an image block (Post-launch fixes batch 2,
+     * item #2) -- non-image blocks are just draft edits, same as Add Item,
+     * and don't need a confirmation.
+     */
+    fun removeEditBlock(index: Int) {
+        val block = _uiState.value.editBlocks.getOrNull(index) ?: return
+        val attachmentId = block.value.toLongOrNull()
+        if (block.type == "image" && attachmentId != null) {
+            viewModelScope.launch {
+                val result = repository.deleteAttachment(itemId, attachmentId)
+                _uiState.value = result.fold(
+                    onSuccess = { _uiState.value.copy(editBlocks = _uiState.value.editBlocks.filterIndexed { i, _ -> i != index }) },
+                    onFailure = { e -> _uiState.value.copy(editErrorMessage = "Failed to delete attachment: ${e.message}") },
+                )
+            }
+            return
+        }
+        _uiState.value = _uiState.value.copy(editBlocks = _uiState.value.editBlocks.filterIndexed { i, _ -> i != index })
+    }
+
+    /** Re-encrypts the full draft payload with the VDK and PUTs it (SPEC-BASE.md `PUT /api/v1/vault/items/{id}`, live since Sprint 2). */
+    fun saveEdit() {
+        val state = _uiState.value
+        if (state.editTitle.isBlank()) {
+            _uiState.value = state.copy(editErrorMessage = "Title is required")
+            return
+        }
+        if (state.editBlocks.isEmpty()) {
+            _uiState.value = state.copy(editErrorMessage = "Add at least one piece of content")
+            return
+        }
+
+        val title = state.editTitle.trim()
+        _uiState.value = state.copy(isSavingEdit = true, editErrorMessage = null)
+        viewModelScope.launch {
+            val result = repository.updateItem(itemId, null, title, state.editBlocks)
+            _uiState.value = result.fold(
+                onSuccess = { updated -> _uiState.value.copy(isSavingEdit = false, isEditing = false, item = updated) },
+                onFailure = { e -> _uiState.value.copy(isSavingEdit = false, editErrorMessage = e.message ?: "Failed to save changes") },
+            )
         }
     }
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -93,5 +94,58 @@ class CategoryViewModelTest {
         viewModel.onQueryChange("internal")
         assertEquals(1, viewModel.uiState.value.visibleItems.size)
         assertEquals("VPN", viewModel.uiState.value.visibleItems.first().title)
+    }
+
+    // Post-launch fixes batch 2, item #3: same auto-refresh-on-return fix
+    // Home got in batch 1 (see HomeViewModelTest's matching cases), now
+    // applied to Category too (see CategoryScreen's ON_RESUME
+    // LifecycleEventObserver calling refreshSilently()).
+
+    @Test
+    fun `refreshSilently picks up items added after the initial load, without touching isLoading`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("A").getOrThrow()
+            val viewModel = CategoryViewModel(repository, cat.id)
+            advanceUntilIdle()
+            assertEquals(0, viewModel.uiState.value.allItems.size)
+
+            // Simulates a new item being added from the Add Item screen while
+            // Category was on the back stack, then the user navigating back.
+            repository.createItem(cat.id, "New Item", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(1, state.allItems.size)
+            assertEquals("New Item", state.allItems.first().title)
+            // Silent refresh must never flip on the full-screen loading state --
+            // that would flash the whole screen away on every back-navigation.
+            assertFalse(state.isLoading)
+        }
+
+    @Test
+    fun `refreshSilently is a no-op while a refresh is already in flight`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("A").getOrThrow()
+        val viewModel = CategoryViewModel(repository, cat.id)
+        // Called synchronously right after construction, before advanceUntilIdle
+        // lets init's own refresh() coroutine complete -- mirrors CategoryScreen's
+        // ON_RESUME firing around the same time as the ViewModel's init block.
+        val callsBeforeGuardedCall = api.listVaultItemsCallCount
+        viewModel.refreshSilently()
+        assertEquals(callsBeforeGuardedCall, api.listVaultItemsCallCount)
+
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `refreshSilently never triggers a network call for typing into search`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("A").getOrThrow()
+        val viewModel = CategoryViewModel(repository, cat.id)
+        advanceUntilIdle()
+        val callsAfterInitialLoad = api.listVaultItemsCallCount
+
+        viewModel.onQueryChange("anything")
+        assertEquals(callsAfterInitialLoad, api.listVaultItemsCallCount)
     }
 }

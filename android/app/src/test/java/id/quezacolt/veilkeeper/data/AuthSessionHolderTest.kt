@@ -89,6 +89,78 @@ class AuthSessionHolderTest {
         AuthSessionHolder.unlock(ByteArray(32))
     }
 
+    // --- Post-launch fixes batch 2, item #1: restoreLocked (process-death
+    // recovery -- the "swipe from recent-apps must show Unlock, not Login"
+    // state machine) -------------------------------------------------------
+
+    @Test
+    fun `restoreLocked transitions a fresh (logged-out) holder straight to LOCKED, never UNLOCKED`() {
+        val mat = material()
+        AuthSessionHolder.restoreLocked("restored-token", mat, "user@example.com")
+
+        assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        assertEquals("restored-token", AuthSessionHolder.sessionToken)
+        assertEquals(mat, AuthSessionHolder.unwrapMaterial)
+        assertEquals("user@example.com", AuthSessionHolder.email)
+    }
+
+    @Test
+    fun `restoreLocked never sets the VDK -- unlocking still requires a real password or biometric auth`() {
+        AuthSessionHolder.restoreLocked("restored-token", material(), "user@example.com")
+
+        assertNull(
+            "restoreLocked must never populate vaultDataKey -- that would skip authentication entirely",
+            AuthSessionHolder.vaultDataKey,
+        )
+    }
+
+    @Test
+    fun `restoreLocked is a no-op if a session is already unlocked in memory (does not clobber a newer state)`() {
+        val liveVdk = ByteArray(32) { 5 }
+        AuthSessionHolder.set("live-token", liveVdk, material(), "live@example.com")
+
+        AuthSessionHolder.restoreLocked("stale-restored-token", material(), "stale@example.com")
+
+        assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+        assertEquals("live-token", AuthSessionHolder.sessionToken)
+        assertArrayEquals(liveVdk, AuthSessionHolder.vaultDataKey)
+        assertEquals("live@example.com", AuthSessionHolder.email)
+    }
+
+    @Test
+    fun `restoreLocked is a no-op if a session is already locked in memory`() {
+        AuthSessionHolder.set("live-token", ByteArray(32) { 1 }, material(), "live@example.com")
+        AuthSessionHolder.lock()
+
+        AuthSessionHolder.restoreLocked("stale-restored-token", material(), "stale@example.com")
+
+        assertEquals("live-token", AuthSessionHolder.sessionToken)
+        assertEquals("live@example.com", AuthSessionHolder.email)
+    }
+
+    @Test
+    fun `a restored LOCKED session can be unlocked exactly like a normal auto-lock, via unlock()`() {
+        AuthSessionHolder.restoreLocked("restored-token", material(), "user@example.com")
+
+        val vdk = ByteArray(32) { 3 }
+        AuthSessionHolder.unlock(vdk)
+
+        assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+        assertArrayEquals(vdk, AuthSessionHolder.vaultDataKey)
+    }
+
+    @Test
+    fun `clear after restoreLocked resets everything, same as a normal logout`() {
+        AuthSessionHolder.restoreLocked("restored-token", material(), "user@example.com")
+
+        AuthSessionHolder.clear()
+
+        assertEquals(VaultLockState.LOGGED_OUT, AuthSessionHolder.lockState.value)
+        assertNull(AuthSessionHolder.sessionToken)
+        assertNull(AuthSessionHolder.unwrapMaterial)
+        assertNull(AuthSessionHolder.email)
+    }
+
     @Test
     fun `clear resets everything including unwrap material and email`() {
         AuthSessionHolder.set("token-1", ByteArray(32), material(), "user@example.com")

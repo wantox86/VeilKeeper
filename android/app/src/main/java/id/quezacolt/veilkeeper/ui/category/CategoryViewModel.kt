@@ -43,27 +43,49 @@ class CategoryViewModel(
         refresh()
     }
 
+    /** Full-screen initial load / explicit "Retry" tap: shows [CategoryUiState.isLoading]. */
     fun refresh() {
         _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-        viewModelScope.launch {
-            val categoriesResult = repository.listCategories()
-            val itemsResult = repository.listItems(categoryId)
+        viewModelScope.launch { fetchAndApply() }
+    }
 
-            val categories = categoriesResult.getOrElse {
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load category")
-                return@launch
-            }
-            val items = itemsResult.getOrElse {
-                _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load items")
-                return@launch
-            }
+    /**
+     * Post-launch fixes batch 2, item #3: same bug as Home's pre-batch-1
+     * "new item doesn't show up without leaving and reopening the app,"
+     * just in this screen instead -- `CategoryViewModel` never got the
+     * `HomeViewModel.refreshSilently()` fix from that batch. Root cause is
+     * identical: Compose Navigation keeps this screen's `NavBackStackEntry`
+     * (and this ViewModel) alive on the back stack while Add Item is on top,
+     * so `init`'s one-time [refresh] never re-runs on its own when
+     * navigating back. Fix is the exact same pattern as
+     * `HomeViewModel.refreshSilently()`: re-fetch without touching
+     * [CategoryUiState.isLoading] (no loading-flash on back-navigation), and
+     * skip while a fetch is already in flight (covers both re-entrancy and
+     * the redundant call right on top of `init`'s own [refresh]).
+     */
+    fun refreshSilently() {
+        if (_uiState.value.isLoading) return
+        viewModelScope.launch { fetchAndApply() }
+    }
 
-            _uiState.value = _uiState.value.copy(
-                isLoading = false,
-                category = categories.firstOrNull { it.id == categoryId },
-                allItems = items,
-            )
+    private suspend fun fetchAndApply() {
+        val categoriesResult = repository.listCategories()
+        val itemsResult = repository.listItems(categoryId)
+
+        val categories = categoriesResult.getOrElse {
+            _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load category")
+            return
         }
+        val items = itemsResult.getOrElse {
+            _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load items")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            isLoading = false,
+            category = categories.firstOrNull { it.id == categoryId },
+            allItems = items,
+        )
     }
 
     fun onQueryChange(value: String) {

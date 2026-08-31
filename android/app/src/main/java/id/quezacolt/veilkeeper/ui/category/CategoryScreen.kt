@@ -27,11 +27,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
@@ -57,6 +61,23 @@ fun CategoryScreen(
     viewModel: CategoryViewModel = viewModel(factory = factory),
 ) {
     val state by viewModel.uiState.collectAsState()
+
+    // Post-launch fixes batch 2, item #3: same fix as HomeScreen got in
+    // batch 1 -- re-fetch on every ON_RESUME (covers "navigated back from
+    // Add Item after saving" and "app resumed from background") so newly
+    // added items show up without leaving and reopening the app. See
+    // CategoryViewModel.refreshSilently()'s doc comment for the root cause.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshSilently()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val screenState: CategoryScreenState = when {
         state.isLoading -> CategoryScreenState.Loading
         state.errorMessage != null -> CategoryScreenState.Error(state.errorMessage ?: "Something went wrong")

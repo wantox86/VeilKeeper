@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -148,4 +149,37 @@ fun <T> VeilKeeperStateCrossfade(
     content: @Composable (T) -> Unit,
 ) {
     Crossfade(targetState = targetState, modifier = modifier, label = "state-crossfade", content = content)
+}
+
+/**
+ * Post-launch fixes batch 2, item #2: standard Material3 confirmation
+ * dialog for every destructive Delete action (vault item, attachment --
+ * see `VaultDetailScreen`) so a mis-tap can't destroy data. Deliberately
+ * generic/reusable (one component, not a bespoke dialog per screen) --
+ * every "Delete X?" prompt in this app needs the exact same shape (title +
+ * short message + destructive Confirm + Cancel), so a shared composable
+ * avoids duplicating that shape three times over (SPEC-BASE.md Section 56
+ * Rule 1).
+ */
+@Composable
+fun VeilKeeperConfirmDeleteDialog(
+    title: String,
+    message: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    confirmLabel: String = "Delete",
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirmLabel, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }

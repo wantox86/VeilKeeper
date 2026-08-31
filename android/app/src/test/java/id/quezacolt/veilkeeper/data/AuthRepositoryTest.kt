@@ -1,6 +1,7 @@
 package id.quezacolt.veilkeeper.data
 
 import id.quezacolt.veilkeeper.crypto.FakeMasterKeyDeriver
+import id.quezacolt.veilkeeper.crypto.FakeSessionCipherProvider
 import id.quezacolt.veilkeeper.crypto.KdfParams
 import id.quezacolt.veilkeeper.crypto.VaultCrypto
 import kotlinx.coroutines.test.runTest
@@ -130,6 +131,72 @@ class AuthRepositoryTest {
 
     private fun assertArrayEqualsCustom(expected: ByteArray, actual: ByteArray) {
         org.junit.Assert.assertArrayEquals(expected, actual)
+    }
+
+    // --- Post-launch fixes batch 2, item #1: login persists (encrypted)
+    // session material for process-death recovery; logout wipes it --------
+
+    @Test
+    fun `login also persists the session to the sessionStore for process-death recovery`() = runTest {
+        val sessionStore = PersistedSessionStore(InMemorySettingsStorage(), FakeSessionCipherProvider())
+        val repositoryWithStore = AuthRepository(api, VaultCrypto(FakeMasterKeyDeriver()), sessionStore = sessionStore)
+
+        val vaultCrypto = VaultCrypto(FakeMasterKeyDeriver())
+        val salt = vaultCrypto.generateKdfSalt()
+        val password = "correct horse battery staple".toCharArray()
+        val masterKey = vaultCrypto.deriveMasterKey(String(password).toByteArray(), salt, KdfParams.DEFAULT)
+        val wrapKey = vaultCrypto.deriveWrapKey(masterKey)
+        val vdk = vaultCrypto.generateVaultDataKey()
+        val wrappedVdk = vaultCrypto.wrapVaultDataKey(vdk, wrapKey)
+
+        api.preloginResponse = PreloginResponse(
+            kdfSalt = Base64.getEncoder().encodeToString(salt),
+            kdfParams = KdfParamsDto(65536, 3, 4),
+            kdfVersion = 1,
+        )
+        api.loginResult = retrofit2.Response.success(
+            LoginResponse(
+                sessionToken = "persisted-token",
+                expiresAt = "2030-01-01T00:00:00Z",
+                wrappedVdk = Base64.getEncoder().encodeToString(wrappedVdk),
+                kdfSalt = Base64.getEncoder().encodeToString(salt),
+                kdfParams = KdfParamsDto(65536, 3, 4),
+                kdfVersion = 1,
+            ),
+        )
+
+        val result = repositoryWithStore.login("user@example.com", password, "device-1", "Test Device")
+        assertTrue(result.isSuccess)
+
+        val persisted = sessionStore.load()
+        assertEquals("persisted-token", persisted?.sessionToken)
+        assertEquals("user@example.com", persisted?.email)
+        // Crucially, only the wrapped VDK is persisted, never the raw one --
+        // PersistedSessionStoreTest covers the store's own logic in detail,
+        // this just proves AuthRepository wires the *right* material into it.
+        assertArrayEqualsCustom(wrappedVdk, persisted!!.unwrapMaterial.wrappedVdk)
+    }
+
+    @Test
+    fun `logout also clears the persisted sessionStore`() = runTest {
+        val sessionStore = PersistedSessionStore(InMemorySettingsStorage(), FakeSessionCipherProvider())
+        sessionStore.save("stale-token", VdkUnwrapMaterial(ByteArray(16), KdfParams.DEFAULT, ByteArray(48)), "user@example.com")
+        val repositoryWithStore = AuthRepository(api, VaultCrypto(FakeMasterKeyDeriver()), sessionStore = sessionStore)
+        AuthSessionHolder.set("some-token", ByteArray(32))
+
+        val result = repositoryWithStore.logout()
+
+        assertTrue(result.isSuccess)
+        assertNull("logout must wipe the persisted session, not just the in-memory one", sessionStore.load())
+    }
+
+    @Test
+    fun `logout with a null sessionStore does not crash (existing tests keep working unchanged)`() = runTest {
+        AuthSessionHolder.set("some-token", ByteArray(32))
+
+        val result = repository.logout() // repository from setUp() has sessionStore = null
+
+        assertTrue(result.isSuccess)
     }
 
     // --- Sprint 3 (SPEC-BASE.md Section 24): offline password unlock ---
