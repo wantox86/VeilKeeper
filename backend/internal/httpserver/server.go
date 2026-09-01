@@ -34,11 +34,16 @@ const (
 	accountLockoutDuration    = 5 * time.Minute
 )
 
-// NewMux builds the HTTP router for the API server. st may be nil if the
-// caller only intends to exercise /health and /ready (as in this package's
-// own unit tests) -- the auth/vault routes will panic if hit against a nil
-// store, but that's not exercised by those tests.
-func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig, attachmentsDir string) *http.ServeMux {
+// NewMux builds the HTTP router for the API server, wrapped with the CORS
+// middleware (see cors.go). st may be nil if the caller only intends to
+// exercise /health and /ready (as in this package's own unit tests) -- the
+// auth/vault routes will panic if hit against a nil store, but that's not
+// exercised by those tests.
+//
+// The return type is http.Handler rather than *http.ServeMux because of the
+// CORS wrapping -- callers (main.go, tests) only ever need ServeHTTP, never
+// mux-specific methods.
+func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig, attachmentsDir string, corsAllowedOrigins []string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
@@ -82,7 +87,7 @@ func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.A
 	mux.HandleFunc("GET /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleGetAttachment))
 	mux.HandleFunc("DELETE /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleDeleteAttachment))
 
-	return mux
+	return corsMiddleware(corsAllowedOrigins, mux)
 }
 
 type statusResponse struct {

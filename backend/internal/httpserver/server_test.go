@@ -26,6 +26,13 @@ func testAuthConfig() config.AuthConfig {
 	}
 }
 
+// testCORSOrigins returns a minimal allowlist for tests that don't
+// exercise CORS behavior directly (health/ready tests only need NewMux to
+// construct without panicking).
+func testCORSOrigins() []string {
+	return []string{"http://localhost:5173"}
+}
+
 // fakePinger lets us unit-test the readiness handler without a real MySQL
 // instance.
 type fakePinger struct {
@@ -50,7 +57,7 @@ func decodeStatus(t *testing.T, body io.Reader) statusResponse {
 }
 
 func TestHandleHealth(t *testing.T) {
-	mux := NewMux(fakePinger{}, nil, discardLogger(), testAuthConfig(), t.TempDir())
+	mux := NewMux(fakePinger{}, nil, discardLogger(), testAuthConfig(), t.TempDir(), testCORSOrigins())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -65,7 +72,7 @@ func TestHandleHealth(t *testing.T) {
 }
 
 func TestHandleReady_DatabaseUp(t *testing.T) {
-	mux := NewMux(fakePinger{err: nil}, nil, discardLogger(), testAuthConfig(), t.TempDir())
+	mux := NewMux(fakePinger{err: nil}, nil, discardLogger(), testAuthConfig(), t.TempDir(), testCORSOrigins())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -80,7 +87,7 @@ func TestHandleReady_DatabaseUp(t *testing.T) {
 }
 
 func TestHandleReady_DatabaseDown(t *testing.T) {
-	mux := NewMux(fakePinger{err: errors.New("connection refused")}, nil, discardLogger(), testAuthConfig(), t.TempDir())
+	mux := NewMux(fakePinger{err: errors.New("connection refused")}, nil, discardLogger(), testAuthConfig(), t.TempDir(), testCORSOrigins())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()
@@ -95,7 +102,7 @@ func TestHandleReady_DatabaseDown(t *testing.T) {
 }
 
 func TestHandleReady_ErrorNotLeaked(t *testing.T) {
-	mux := NewMux(fakePinger{err: errors.New("secret internal detail: dsn=user:pass@tcp(...)")}, nil, discardLogger(), testAuthConfig(), t.TempDir())
+	mux := NewMux(fakePinger{err: errors.New("secret internal detail: dsn=user:pass@tcp(...)")}, nil, discardLogger(), testAuthConfig(), t.TempDir(), testCORSOrigins())
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
 	rec := httptest.NewRecorder()

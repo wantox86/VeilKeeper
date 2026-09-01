@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,15 @@ type Config struct {
 	// written to/read from (SPEC-BASE.md Section 7). Must match the
 	// docker-compose.yml bind mount target (/data/attachments).
 	AttachmentsDir string
+
+	// CORSAllowedOrigins is an explicit allowlist of browser origins allowed
+	// to make cross-origin requests (e.g. the Web client dev server, and
+	// eventually its Sprint 8 internal/LAN deployment origin). Deliberately
+	// never a wildcard, since this is a zero-knowledge auth backend -- see
+	// CORS_ALLOWED_ORIGINS in .env.example and httpserver/cors.go. Requests
+	// with no Origin header at all (e.g. the Android app's native HTTP
+	// client) are unaffected regardless of this list's contents.
+	CORSAllowedOrigins []string
 }
 
 // AuthConfig holds Sprint 1 authentication settings.
@@ -94,7 +104,8 @@ func Load(logger *slog.Logger) Config {
 			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
 			RateLimitWindow:            time.Minute,
 		},
-		AttachmentsDir: getEnv("ATTACHMENTS_DIR", "/data/attachments"),
+		AttachmentsDir:     getEnv("ATTACHMENTS_DIR", "/data/attachments"),
+		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://127.0.0.1:5173"}),
 	}
 }
 
@@ -148,4 +159,28 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvList reads a comma-separated env var into a trimmed, non-empty
+// string slice. Falls back if the var is unset; an explicitly-set-but-empty
+// value ("") also falls back rather than producing an allow-nothing list,
+// since that's almost certainly not what an operator intended.
+func getEnvList(key string, fallback []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	return out
 }

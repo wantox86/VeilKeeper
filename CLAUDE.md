@@ -971,3 +971,54 @@ verified). `docker ps` reconfirmed no interaction with/collision against the run
 `veilkeeper-*` or Qoder `vk-sprint3-*` stacks -- Sprint 1 only ever issued read-only `GET
 /health` requests against the already-running `veilkeeper-api` container, never restarted or
 reconfigured it.
+
+### Backend CORS fix (pre-Sprint-2, resolves the Web Sprint 1 disclosed blocker above)
+
+Added a minimal stdlib-only CORS middleware (`backend/internal/httpserver/cors.go`,
+`corsMiddleware`) wrapping the router in `NewMux` (which now returns `http.Handler` instead of
+`*http.ServeMux`, since the wrapping needs a decorator). No third-party CORS framework added --
+matches this backend's existing stdlib-only design.
+
+- New env var `CORS_ALLOWED_ORIGINS` (comma-separated allowlist, see `.env.example`), default
+  `http://localhost:5173,http://127.0.0.1:5173` (Vite dev server). **Never a wildcard** -- this
+  is a zero-knowledge auth backend. Web Sprint 8's internal/LAN deployment origin will be added
+  here too once it exists.
+- Behavior: no `Origin` header at all (Android app, curl, server-to-server) -> completely
+  transparent, zero behavior change. `Origin` present but not allowlisted -> request still
+  processed normally (no CORS header attached; the browser enforces the block client-side, not
+  this server). `Origin` present and allowlisted -> the matched origin is echoed back in
+  `Access-Control-Allow-Origin` (never `*`), plus `Access-Control-Allow-Methods` (GET, POST,
+  PUT, DELETE, OPTIONS), `Access-Control-Allow-Headers` (`Authorization, Content-Type`),
+  `Access-Control-Max-Age: 600`, `Vary: Origin`. `Access-Control-Allow-Credentials` is
+  deliberately never set (auth uses a Bearer token, not cookies). Preflight `OPTIONS` requests
+  are short-circuited with `204` and never reach the underlying router.
+- Tests: `backend/internal/httpserver/cors_test.go` (`httptest`-based, no MySQL needed) --
+  allowed origin gets the headers, disallowed origin gets none but the request still completes,
+  no-Origin request is fully transparent, preflight OPTIONS returns 204 with headers and never
+  reaches the wrapped handler, disallowed-origin preflight returns 204 with no CORS headers.
+  `go test -race -cover ./...`: **71 tests, all passing** (up from 65), `gofmt`/`go vet` clean.
+- **Local verification before touching the live backend**: brought up a fully separate,
+  disposably-named Docker Compose stack (`docker compose -p veilkeeper-corstest`, temporary
+  `.env.test` with fresh dummy secrets -- never the real production `.env` -- and a temporary
+  `docker-compose.corstest.yml` override using Compose's `!override` merge tag for `ports`/
+  `env_file`, since Compose merges those lists by concatenation by default and a naive override
+  collided with the live `veilkeeper-api` container's port 18091 on the first attempt). Verified
+  with `curl`: no-Origin request behaves identically to before; allowlisted-Origin request gets
+  the CORS headers; disallowed-Origin request gets none. Verified with a **real headless
+  browser** (Playwright/Chromium, `web/` pointed at the test backend via a temporary
+  `VITE_API_BASE_URL`): the health-check page loads with `Status: ok` and zero console errors --
+  the exact CORS failure Web Sprint 1 documented is gone. Also ran a full auth smoke test against
+  the test stack (register -> wrong-key login rejected 401 -> correct login 200 -> logout 204 ->
+  post-logout request correctly 401'd, CORS headers present throughout on both success and error
+  responses) to confirm the fix doesn't change auth behavior at all. Test stack, `.env.test`, the
+  override compose file, and `web/.env` were all torn down/deleted afterward -- none committed,
+  none left running.
+- **Deployed to the live backend** (`veilkeeper-api`/`veilkeeper-mysql` on this same MACMINI
+  host): `docker compose up -d --build` for the `api` service only, from this commit. Production
+  `.env` was updated with the same `CORS_ALLOWED_ORIGINS` default (Vite dev origins) -- no other
+  existing secret (`SERVER_PEPPER`, `DB_PASSWORD`, etc.) was touched or regenerated. Post-deploy
+  verification: `/health` and `/ready` both still respond normally; a real register/login/logout
+  cycle via `curl` with no `Origin` header (simulating the live Android app) behaves identically
+  to before the change; a `curl` with `Origin: http://localhost:5173` against the live backend
+  now returns the `Access-Control-Allow-Origin` header where it previously returned nothing.
+  `docker ps` reconfirmed zero collision with the Qoder build throughout.

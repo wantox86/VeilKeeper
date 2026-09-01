@@ -29,7 +29,7 @@ func main() {
 	defer database.Close()
 
 	authStore := store.NewMySQLStore(database)
-	mux := httpserver.NewMux(database, authStore, logger, cfg.Auth, cfg.AttachmentsDir)
+	mux := httpserver.NewMux(database, authStore, logger, cfg.Auth, cfg.AttachmentsDir, cfg.CORSAllowedOrigins)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
