@@ -33,8 +33,15 @@ export async function encrypt(
     {
       name: 'AES-GCM',
       iv: toArrayBuffer(nonce),
-      additionalData: associatedData ? toArrayBuffer(associatedData) : undefined,
       tagLength: TAG_LENGTH_BITS,
+      // Only include additionalData when actually provided: Node's
+      // crypto.subtle (used under Vitest) silently tolerates
+      // `additionalData: undefined`, but real browser WebCrypto
+      // implementations (verified against Chromium) reject it with
+      // "additionalData: Not a BufferSource" if the key is present at all,
+      // even with an undefined value -- so the key itself must be omitted,
+      // not just its value left undefined.
+      ...(associatedData ? { additionalData: toArrayBuffer(associatedData) } : {}),
     },
     cryptoKey,
     toArrayBuffer(plaintext),
@@ -71,8 +78,10 @@ export async function decrypt(
     {
       name: 'AES-GCM',
       iv: toArrayBuffer(nonce),
-      additionalData: associatedData ? toArrayBuffer(associatedData) : undefined,
       tagLength: TAG_LENGTH_BITS,
+      // See the matching comment in encrypt() above -- must omit the key
+      // entirely when there's no AAD, not just leave its value undefined.
+      ...(associatedData ? { additionalData: toArrayBuffer(associatedData) } : {}),
     },
     cryptoKey,
     toArrayBuffer(ciphertext),

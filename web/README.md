@@ -4,10 +4,10 @@ Web client for VeilKeeper (Vue 3 + TypeScript + Vite). See the repo root
 [`CLAUDE.md`](../CLAUDE.md) for the full product context, resolved design
 decisions, and the Web sprint roadmap.
 
-**Sprint 1 status: scaffold + crypto foundation only.** There is no
-Login/Register/Vault UI yet -- just a health-check page that confirms the
-app can reach the backend, and a fully tested `src/crypto/` module. Those
-land in Sprint 2+.
+**Sprint 2 status: authentication.** Login/Register/Dashboard (protected
+route) + logout are implemented and wired to the real backend auth API and
+the crypto module. Vault CRUD UI is still not implemented -- that's Sprint
+3+.
 
 ## Requirements
 
@@ -55,13 +55,13 @@ that mutates state.
 
 ```text
 src/
-  components/   Shared, reusable Vue components (empty in Sprint 1)
-  views/        Route-level pages (HealthCheckView.vue is the only one so far)
-  layouts/      Page shells/layouts for later sprints (empty in Sprint 1)
-  stores/       Pinia stores for shared state (health.ts)
-  services/     API client + backend service calls (api.ts, health.ts)
-  crypto/       Client-side crypto: HKDF, AES-GCM, Argon2id, key hierarchy
-  router/       Vue Router setup
+  components/   Shared, reusable Vue components (empty so far)
+  views/        Route-level pages: HealthCheckView, LoginView, RegisterView, DashboardView
+  layouts/      Page shells/layouts for later sprints (empty so far)
+  stores/       Pinia stores: health.ts, auth.ts (session/email/VDK, in-memory only)
+  services/     API client + backend service calls: api.ts, health.ts, authApi.ts, device.ts
+  crypto/       Client-side crypto: HKDF, AES-GCM, Argon2id, key hierarchy, base64
+  router/       Vue Router setup, incl. the protected-route auth guard
   types/        Shared TypeScript types + hand-written ambient declarations
 ```
 
@@ -105,4 +105,68 @@ test vectors:
 
 `src/services/health.ts` + `src/stores/health.ts` + `src/views/HealthCheckView.vue`
 call the backend's `GET /health` (pure liveness, no auth, no side effects)
-and display the result. This is the only functional page in Sprint 1.
+and display the result. Reachable at `/health` (no longer the default route
+as of Sprint 2).
+
+## Authentication (Sprint 2)
+
+`LoginView.vue` / `RegisterView.vue` / `DashboardView.vue` (protected) +
+`stores/auth.ts` (Pinia) + `services/authApi.ts` implement the same
+password-derived key hierarchy as Android (CLAUDE.md Resolved Design
+Decision #1): Argon2id -> MasterKey -> HKDF -> AuthKey (sent)/WrapKey
+(kept) -> VaultDataKey generate/wrap (register) or unwrap (login).
+
+**Deliberate simplification, disclosed**: the session token and unwrapped
+VDK live in the Pinia store's in-memory state only -- never written to
+localStorage/sessionStorage. A page refresh logs the user out (the router
+guard in `router/index.ts` redirects `/dashboard` back to `/login`).
+Mirrors Android Sprint 1's own equivalent choice (`AuthSessionHolder`, no
+disk persistence until a Keystore-backed cache lands) -- Web has no
+biometric/Keystore-equivalent design decision made yet either. A per-browser
+random `device_identifier` (non-secret, fine to persist) is kept in
+localStorage (`services/device.ts`) so repeat logins map to the same
+`devices` row server-side.
+
+### A required upstream patch: `argon2-browser` + Vite 8 (rolldown)
+
+`patches/argon2-browser+1.18.0.patch` (applied automatically via
+`postinstall` -> `patch-package`) fixes a real incompatibility, not a
+config quirk: `argon2-browser`'s `lib/argon2.js` decides whether to
+`require('../dist/argon2.wasm')` (Node path) or `fetch()` it (browser path)
+by checking `typeof require === 'function'`. Two problems surfaced only
+once Sprint 2 actually wired the crypto module into the app bundle (Sprint
+1 never did -- nothing in its UI called it):
+
+1. This project's Vite 8 uses the rolldown-based bundler, which refuses to
+   let a CJS `require()` statically resolve to a `.wasm` file compiled as
+   an async ESM module (`[REQUIRE_TLA] This require call is not allowed...`)
+   -- both in `npm run dev`'s dependency optimizer and in `npm run build`.
+2. Separately, Vite's own CJS-interop machinery injects a local `require`
+   shim into the bundled module scope for unrelated reasons, which makes
+   `typeof require === 'function'` evaluate `true` even in a real browser,
+   wrongly taking the Node branch instead of the intended `fetch()` one.
+
+The patch: (a) makes the environment check `isRealBrowser` (checks for
+`window`/`document`, not the polluted `typeof require`) so the intended
+`fetch()`-based browser path is reliably taken, and (b) obscures the
+Node-only `require('../dist/argon2.wasm')` call via indirect eval
+(`((0, eval)('require'))(...)`) so rolldown's static analysis doesn't try
+to bundle it at all -- it's genuinely unreachable in a browser anyway.
+Verified: `npm run dev` + a real Chromium session (register/login/logout)
+and `npm run build` (production bundle) both work; `npm test` (Vitest,
+real Node, unaffected by this patch's `isRealBrowser` branch) still passes.
+If `argon2-browser` is ever upgraded, re-run `npx patch-package
+argon2-browser` and diff the new patch against this one.
+
+### A real cross-runtime AES-GCM bug this patch's testing also caught
+
+`crypto/aesGcm.ts` used to always include an `additionalData` key in the
+`crypto.subtle.encrypt`/`decrypt` algorithm object, set to `undefined` when
+no AAD was passed. Node's `crypto.subtle` (used under Vitest) tolerates
+this silently; real browser WebCrypto (Chromium, verified via Playwright)
+throws `Failed to execute 'encrypt': additionalData: Not a BufferSource` --
+the key must be omitted entirely, not just left `undefined`. Fixed by
+conditionally spreading the key in only when AAD is actually provided. This
+is exactly why Sprint 2's acceptance criteria required real-browser
+Playwright verification, not just Vitest: this bug was invisible to the
+existing (correct, passing) unit test suite.

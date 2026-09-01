@@ -1,0 +1,16 @@
+diff --git a/node_modules/argon2-browser/lib/argon2.js b/node_modules/argon2-browser/lib/argon2.js
+index ffa77a5..c538e4c 100644
+--- a/node_modules/argon2-browser/lib/argon2.js
++++ b/node_modules/argon2-browser/lib/argon2.js
+@@ -78,8 +78,9 @@
+         if (global.loadArgon2WasmBinary) {
+             return global.loadArgon2WasmBinary();
+         }
+-        if (typeof require === 'function') {
+-            return Promise.resolve(require('../dist/argon2.wasm')).then(
++        const isRealBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
++        if (!isRealBrowser && typeof require === 'function') {
++            return Promise.resolve(((0, eval)('require'))('../dist/argon2.wasm')).then(
+                 (wasmModule) => {
+                     return decodeWasmBinary(wasmModule);
+                 }

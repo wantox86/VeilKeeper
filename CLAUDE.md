@@ -837,9 +837,11 @@ unverified work across the whole project, called out consistently sprint over sp
 than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
-below for its own tracking. Web Sprint 1 (scaffold + crypto foundation) is complete as of the
-most recent commit touching `web/`; Android/backend above are unaffected (Web Sprint 1 touched
-`web/` only).
+below for its own tracking. Web Sprint 2 (authentication) is complete as of the most recent
+commit touching `web/`; Android/backend are unaffected by Web sprints themselves, though the
+backend did get a small, carefully-verified CORS middleware addition just before Web Sprint 2
+(see "Backend CORS fix" above) since Web Sprint 2 needed working cross-origin requests to
+function at all.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -856,10 +858,10 @@ until Sprint 8; noted here so it isn't forgotten by then.
 
 Planned roadmap (subject to revision as sprints land):
 
-- **Sprint 1 (this one)** — project scaffold + crypto foundation. See below.
-- **Sprint 2 (planned)** — Login/Register UI wired to the real crypto module + backend auth
+- **Sprint 1** — project scaffold + crypto foundation. Complete, see below.
+- **Sprint 2 (this one)** — Login/Register UI wired to the real crypto module + backend auth
   API (mirrors Android Sprint 1's UI scope, using the crypto foundation Sprint 1 already
-  built and tested).
+  built and tested). Complete, see below.
 - **Sprint 3-7 (planned)** — vault CRUD UI, categories, secure UX equivalents (session
   handling, auto-lock -- no biometric/Keystore equivalent exists on Web, needs its own
   design decision when reached), search, attachments, UI polish. Not yet scoped in detail;
@@ -1014,11 +1016,106 @@ matches this backend's existing stdlib-only design.
   override compose file, and `web/.env` were all torn down/deleted afterward -- none committed,
   none left running.
 - **Deployed to the live backend** (`veilkeeper-api`/`veilkeeper-mysql` on this same MACMINI
-  host): `docker compose up -d --build` for the `api` service only, from this commit. Production
+  host): `docker compose up -d --build api` from this commit (pushed to `main` first). Production
   `.env` was updated with the same `CORS_ALLOWED_ORIGINS` default (Vite dev origins) -- no other
-  existing secret (`SERVER_PEPPER`, `DB_PASSWORD`, etc.) was touched or regenerated. Post-deploy
-  verification: `/health` and `/ready` both still respond normally; a real register/login/logout
-  cycle via `curl` with no `Origin` header (simulating the live Android app) behaves identically
-  to before the change; a `curl` with `Origin: http://localhost:5173` against the live backend
-  now returns the `Access-Control-Allow-Origin` header where it previously returned nothing.
-  `docker ps` reconfirmed zero collision with the Qoder build throughout.
+  existing secret (`SERVER_PEPPER`, `DB_PASSWORD`, etc.) was touched or regenerated. **Note**:
+  `docker compose up -d --build api` recreated `veilkeeper-mysql` too, not just `api` -- Compose
+  detected the `.env` file itself changed (the new `CORS_ALLOWED_ORIGINS` line) and treated that
+  as a config diff for every service reading that env file, mysql included. This is expected
+  Compose behavior, not a mistake to avoid next time, and is harmless here: the named volume
+  (`veilkeeper-mysql-data`) is untouched by a container recreate, only `down -v` would drop it.
+  Post-deploy verification: `/health` and `/ready` both responded normally within seconds; a real
+  register (via `curl`, no `Origin` header, simulating the live Android app) returned `user_id: 5`
+  -- proving users 1-4 from before the restart survived intact, i.e. no data loss from the mysql
+  recreate -- followed by wrong-key login (401), correct login (200), and logout (204), all
+  behaving identically to before the change; `curl` with `Origin: http://localhost:5173` against
+  the live backend now returns `Access-Control-Allow-Origin`/`Access-Control-Allow-Methods`/etc.
+  (including on preflight `OPTIONS` and on error responses), and a `https://evil.example.com`
+  origin correctly gets none. `docker ps` reconfirmed zero collision with the Qoder build
+  throughout.
+
+### Web Sprint 2 (Authentication) — complete
+
+Delivered:
+
+- `web/src/views/{LoginView,RegisterView,DashboardView}.vue` + `web/src/stores/auth.ts` (Pinia)
+  + `web/src/services/authApi.ts` implement the same password-derived key hierarchy as Android
+  (CLAUDE.md Resolved Design Decision #1), calling the real `POST /api/v1/auth/{prelogin,
+  register,login,logout}` endpoints (same endpoints Android's Sprint 1 uses): Argon2id ->
+  MasterKey -> HKDF -> AuthKey (sent)/WrapKey (kept) -> VaultDataKey generate/wrap (register) or
+  unwrap (login). New `web/src/crypto/base64.ts` (encode/decode helper, needed to move key
+  material over the JSON wire -- Sprint 1 never needed one) and `web/src/types/auth.ts` (wire
+  DTOs + `KdfParamsWire`/`KdfParams` field-name mapping: wire uses `memory`, the TS-side type
+  uses `memoryKiB`, matching the backend's `auth.KDFParams` Go struct exactly).
+- **Deliberate simplification, disclosed**: session token and unwrapped VDK live in the Pinia
+  store's state only, never written to localStorage/sessionStorage -- a page refresh logs the
+  user out. Mirrors Android Sprint 1's own equivalent choice (`AuthSessionHolder`, no disk
+  persistence until a Keystore-backed cache lands in a later Android sprint); Web has no
+  biometric/Keystore-equivalent design decision made yet either (see the Sprint 3-7 roadmap note
+  above). A per-browser random `device_identifier` (non-secret, just a UUID, carries no key
+  material) is persisted in localStorage (`web/src/services/device.ts`) so repeat logins from the
+  same browser map to the same `devices` row server-side instead of minting a new one every time.
+- `web/src/router/index.ts`: protected-route guard (`meta.requiresAuth`) redirects to `/login`
+  (preserving the intended destination via a `redirect` query param) when there's no active
+  session; `meta.publicOnly` on `/login`/`/register` redirects an already-authenticated user to
+  `/dashboard`. The Sprint 1 health-check page moved from `/` to `/health` (no longer the default
+  route); `/` now redirects to `/dashboard`.
+- **Two real bugs found only by testing against a real browser (Playwright/Chromium), invisible
+  to the existing Vitest suite** -- both fixed, both documented in detail in `web/README.md`
+  (see "A required upstream patch" and "A real cross-runtime AES-GCM bug" there):
+  1. `argon2-browser` (WASM Argon2id, from Web Sprint 1) is fundamentally incompatible with this
+     project's Vite 8 (rolldown-based) bundler once actually wired into the app bundle -- Sprint
+     1 never hit this because nothing in its UI called the crypto module yet. Fixed via a
+     `patch-package` patch (`web/patches/argon2-browser+1.18.0.patch`, applied automatically via
+     a new `postinstall` script) that (a) makes the library's browser-vs-Node detection check for
+     `window`/`document` instead of the unreliable `typeof require` (which a browser bundler's own
+     CJS-interop shim can make falsely truthy), and (b) obscures the Node-only
+     `require('../dist/argon2.wasm')` call via indirect eval so rolldown's static analysis doesn't
+     try to statically bundle a CJS require of an async-ESM-with-top-level-await `.wasm` module
+     (which is a real, valid bundler restriction, not just strictness). Also added
+     `vite-plugin-wasm` as a dev dependency (needed for `.wasm` handling generally under this Vite
+     version; its own published types needed a local re-cast in `vite.config.ts`, documented there
+     -- a known dual-CJS/ESM packaging type mismatch, not a runtime issue).
+  2. `web/src/crypto/aesGcm.ts`'s `encrypt`/`decrypt` always included an `additionalData` key in
+     the WebCrypto algorithm object, set to `undefined` when no AAD was passed (which is what
+     every current caller does -- VDK wrap/unwrap never uses AAD). Node's `crypto.subtle` (what
+     Vitest runs against) silently tolerates `additionalData: undefined`; real browser WebCrypto
+     (Chromium) throws `additionalData: Not a BufferSource` if the key is present at all, even
+     with an undefined value. Fixed by conditionally spreading the key in only when AAD is
+     actually provided. **This is exactly why Sprint 2's acceptance criteria required real-browser
+     Playwright verification, not just unit tests** -- this bug was invisible to the existing
+     (correct, passing) `aesGcm.test.ts` suite the whole time.
+- **Vitest: 36 tests passing** (up from 18 in Sprint 1) -- new: `crypto/__tests__/base64.test.ts`
+  (round-trip incl. empty input, standard-not-URL-safe alphabet check), `services/__tests__/
+  authApi.test.ts` (mocked `fetch`: request shapes, `ApiError` on every 4xx path, success paths),
+  `services/__tests__/device.test.ts` (id generation + persistence via a fake `localStorage`),
+  `stores/__tests__/auth.test.ts` (real crypto, mocked `authApi` only: register never auto-logs-
+  in, `email_taken` surfaces a friendly message, **login end-to-end derives the correct AuthKey
+  and unwraps a VDK wrapped exactly the way a real registration would have**, invalid-credentials
+  surfaces a generic message and leaves state unauthenticated, logout clears local state even if
+  the server call fails and is a no-op with no active session). `npm run lint` / `format:check` /
+  `vue-tsc -b` / `npm run build` (production bundle, now succeeds thanks to the argon2-browser
+  patch above) all clean.
+- **End-to-end verification, performed for real against the live backend** (not a local/test
+  stack -- this sprint's whole point was proving the CORS-fixed live backend actually works from
+  a real browser): `npm run dev` (Vite dev server, `web/.env` pointed at
+  `https://veilkeeper.quezacolt.my.id/`, temporary, deleted afterward) + a real headless Chromium
+  session via Playwright (installed temporarily, not a project dependency, same pattern as Web
+  Sprint 1's own verification). All of the following passed, checked programmatically (URL after
+  navigation, page body text, zero browser console errors on the pages that touch key material):
+  visiting `/dashboard` while unauthenticated redirects to `/login?redirect=/dashboard`;
+  registering a fresh account (`web-sprint2-e2e-<timestamp>@example.com`) succeeds and redirects
+  to `/login?registered=1`; logging in with the wrong password stays on `/login` and shows
+  "Incorrect email or password." (the generic anti-enumeration-safe message, not "wrong
+  password"); logging in with the correct password redirects to `/dashboard` and displays the
+  logged-in email; clicking "Log out" redirects to `/login`; `/dashboard` is protected again
+  immediately after logout. Re-ran the full sequence a second time after a clean
+  `rm -rf node_modules/argon2-browser && npm install` to confirm the `postinstall` patch-package
+  step reapplies correctly on a fresh install, not just in the already-patched working tree --
+  same result. **This creates a small number of permanent (harmless) test accounts in the live
+  production database** (`web-sprint2-e2e-*@example.com`, plus one earlier ad hoc
+  `deploy-verify-*@example.com` from Part A's own live-deploy verification) -- accepted as normal
+  for this homelab comparison project, same as the curl-based smoke tests Sprint 1/2 of the
+  backend itself already did against the same live database.
+- No Web CI workflow added this sprint either (still allowed per the CI policy in the roadmap
+  intro above -- Web CI is optional, never a hard gate, confirmed by the user).
