@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -107,6 +108,56 @@ class VaultRepositoryTest {
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.NotUnlocked)
+    }
+
+    // Post-launch fixes batch 3: the "vault is locked / Retry -> infinite
+    // loop" bug. Root cause: nothing at the VaultRepository layer ever told
+    // AuthSessionHolder when it discovered the VDK was gone -- see
+    // notUnlockedFailure()'s doc comment. These tests pin the new
+    // invariant: any VaultRepository call that returns NotUnlocked must
+    // leave AuthSessionHolder.lockState as LOCKED (or LOGGED_OUT, if that's
+    // what it already was) -- never UNLOCKED, and never something a caller
+    // could mistake for "safe to just show an error and let the user retry".
+
+    @Test
+    fun `a NotUnlocked failure forces the global lock state to LOCKED when a session is still active`() = runTest {
+        // Simulates auto-lock firing mid-session: the VDK is cleared but the
+        // session token/unwrap material survive (AuthSessionHolder.lock()),
+        // exactly like AutoLockManager's real background/timeout/screen-off
+        // triggers -- see AutoLockManager.kt.
+        AuthSessionHolder.lock()
+        assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+
+        val result = repository.listItems()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.NotUnlocked)
+        assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+    }
+
+    @Test
+    fun `a NotUnlocked failure after a full logout stays LOGGED_OUT, not LOCKED`() = runTest {
+        AuthSessionHolder.clear()
+        assertEquals(VaultLockState.LOGGED_OUT, AuthSessionHolder.lockState.value)
+
+        val result = repository.listItems()
+
+        assertTrue(result.exceptionOrNull() is VaultRepository.VaultError.NotUnlocked)
+        // A repository call racing a real logout must not resurrect a
+        // LOCKED state for a session that was explicitly ended -- that
+        // would incorrectly send a logged-out user to the Unlock screen
+        // instead of Login.
+        assertEquals(VaultLockState.LOGGED_OUT, AuthSessionHolder.lockState.value)
+    }
+
+    @Test
+    fun `isVaultLocked is true for NotUnlocked and false for every other VaultError`() {
+        assertTrue(VaultRepository.VaultError.NotUnlocked("vault is locked").isVaultLocked())
+        assertFalse(VaultRepository.VaultError.ServerError("boom").isVaultLocked())
+        assertFalse(VaultRepository.VaultError.NetworkError("timeout").isVaultLocked())
+        assertFalse(VaultRepository.VaultError.Unauthorized("expired").isVaultLocked())
+        assertFalse(VaultRepository.VaultError.NotFound("gone").isVaultLocked())
+        assertFalse(VaultRepository.VaultError.Conflict("conflict").isVaultLocked())
     }
 
     @Test

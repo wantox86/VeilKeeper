@@ -100,14 +100,14 @@ class VaultRepository(
     // --- vault items -----------------------------------------------------
 
     suspend fun listItems(categoryId: Long? = null): Result<List<DecryptedVaultItem>> = withContext(ioDispatcher) {
-        val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+        val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
         withBody({ api.listVaultItems(bearer(), categoryId) }) { body ->
             withContext(computeDispatcher) { body.mapNotNull { decryptOrNull(it, vdk) } }
         }
     }
 
     suspend fun getItem(id: Long): Result<DecryptedVaultItem> = withContext(ioDispatcher) {
-        val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+        val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
         withBody({ api.getVaultItem(bearer(), id) }) { dto ->
             withContext(computeDispatcher) { dto.toDomain(vdk) }
         }
@@ -115,7 +115,7 @@ class VaultRepository(
 
     suspend fun createItem(categoryId: Long, title: String, content: List<ContentBlockDto>): Result<DecryptedVaultItem> =
         withContext(ioDispatcher) {
-            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
             val encrypted = withContext(computeDispatcher) {
                 VaultItemCrypto.encrypt(vdk, VaultItemPayload(title, content))
             }
@@ -126,7 +126,7 @@ class VaultRepository(
 
     suspend fun updateItem(id: Long, categoryId: Long?, title: String, content: List<ContentBlockDto>): Result<DecryptedVaultItem> =
         withContext(ioDispatcher) {
-            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
             val encrypted = withContext(computeDispatcher) {
                 VaultItemCrypto.encrypt(vdk, VaultItemPayload(title, content))
             }
@@ -154,7 +154,7 @@ class VaultRepository(
      */
     suspend fun uploadAttachment(itemId: Long, filename: String, mimeType: String, fileBytes: ByteArray): Result<AttachmentRef> =
         withContext(ioDispatcher) {
-            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
             val (encryptedFilename, encryptedData) = withContext(computeDispatcher) {
                 AttachmentCrypto.encryptFilename(vdk, filename) to AttachmentCrypto.encryptFile(vdk, fileBytes)
             }
@@ -170,7 +170,7 @@ class VaultRepository(
     /** Downloads attachment [attachmentId] of item [itemId] and decrypts filename + bytes with the VDK. */
     suspend fun downloadAttachment(itemId: Long, attachmentId: Long): Result<DecryptedAttachment> =
         withContext(ioDispatcher) {
-            val vdk = currentVdk() ?: return@withContext Result.failure(VaultError.NotUnlocked("vault is locked"))
+            val vdk = currentVdk() ?: return@withContext notUnlockedFailure()
             withBody({ api.getAttachment(bearer(), itemId, attachmentId) }) { dto ->
                 withContext(computeDispatcher) {
                     val filename = AttachmentCrypto.decryptFilename(vdk, dto.encryptedFilename.fromB64())
@@ -193,6 +193,41 @@ class VaultRepository(
     }
 
     private fun currentVdk(): ByteArray? = AuthSessionHolder.vaultDataKey
+
+    /**
+     * Post-launch fixes batch 3 -- root cause of the "vault is locked /
+     * Retry -> infinite loop" bug: every method above already returned
+     * [VaultError.NotUnlocked] when [currentVdk] was null (auto-lock fired
+     * while a Home/Category/Vault-Detail screen was still open), but nothing
+     * at *this* layer ever told [AuthSessionHolder] about it -- callers
+     * (`HomeViewModel`/`CategoryViewModel`/etc.) just rendered the failure
+     * as a generic [VeilKeeperErrorState]-with-Retry, and Retry re-ran the
+     * exact same call, which failed the exact same way forever. The only
+     * thing that was ever supposed to flip [AuthSessionHolder.lockState] to
+     * `LOCKED` (which is what drives `MainActivity`'s global redirect to the
+     * Unlock screen) was [AutoLockManager] -- a *separate* observer, on a
+     * *different* timing, from a *different* trigger. Discovering
+     * "the VDK is gone" here, at the single choke point every vault
+     * operation already funnels through, is a strictly stronger signal than
+     * relying on a background/foreground lifecycle callback to have already
+     * done it: it makes the transition to `LOCKED` synchronous with, and
+     * caused directly by, the exact failure the UI is about to react to,
+     * instead of two independently-timed paths that a real device's
+     * lifecycle/Compose recomposition scheduling could (and evidently did)
+     * momentarily desync. [AuthSessionHolder.lock] is idempotent and a
+     * no-op when already `LOCKED`/`LOGGED_OUT` (see its own doc comment), so
+     * calling it here is always safe and never fights a fresher state.
+     * Pairs with the `errorMessage`/`NotUnlocked` special-casing added to
+     * every `VaultRepository`-consuming ViewModel in the same batch (see
+     * [isVaultLocked]) -- that's what actually stops a Retry button from
+     * ever being shown for this specific error, this call is what guarantees
+     * the screen behind it actually gets replaced by Unlock instead of
+     * staying on whatever (now error-free) state was last rendered.
+     */
+    private fun notUnlockedFailure(): Result<Nothing> {
+        AuthSessionHolder.lock()
+        return Result.failure(VaultError.NotUnlocked("vault is locked"))
+    }
 
     /**
      * Decrypts a single item for list screens, tolerating a decrypt failure
@@ -257,6 +292,26 @@ class VaultRepository(
         else -> VaultError.ServerError("request failed ($code)")
     }
 }
+
+/**
+ * Post-launch fixes batch 3: true for [VaultRepository.VaultError.NotUnlocked]
+ * specifically -- the vault got locked (auto-lock/screen-off/idle-timeout)
+ * partway through an active session, not a "this operation genuinely
+ * failed and retrying it might work" error like a network timeout or a
+ * 500. Every `VaultRepository`-consuming ViewModel checks this before
+ * setting an `errorMessage`: this case must **never** render via
+ * [id.quezacolt.veilkeeper.ui.components.VeilKeeperErrorState]'s Retry
+ * button, because tapping Retry would just re-run the same call against a
+ * still-missing VDK and fail the exact same way again (this was the root
+ * cause of the "vault is locked -> Retry -> loading -> vault is locked"
+ * loop bug). [VaultRepository.notUnlockedFailure] already forces
+ * [AuthSessionHolder.lockState] to `LOCKED` the moment this happens, which
+ * is what actually drives `MainActivity`'s existing global redirect to the
+ * Unlock screen -- ViewModels just need to stay out of its way by not
+ * painting a competing "error" over the screen it's about to navigate off
+ * of.
+ */
+fun Throwable.isVaultLocked(): Boolean = this is VaultRepository.VaultError.NotUnlocked
 
 /**
  * Builds a short, non-sensitive preview string for list screens: prefers

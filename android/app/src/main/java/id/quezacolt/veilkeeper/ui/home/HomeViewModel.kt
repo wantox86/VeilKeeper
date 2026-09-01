@@ -6,6 +6,7 @@ import id.quezacolt.veilkeeper.data.Category
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.data.VaultSearch
+import id.quezacolt.veilkeeper.data.isVaultLocked
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,17 +104,35 @@ class HomeViewModel(private val repository: VaultRepository) : ViewModel() {
         viewModelScope.launch { fetchAndApply() }
     }
 
-    /** Fetches categories + items and applies the result (or error) to [_uiState]. Leaves [HomeUiState.isLoading]/[HomeUiState.isRefreshing] untouched -- callers manage those. */
+    /**
+     * Fetches categories + items and applies the result (or error) to
+     * [_uiState]. Leaves [HomeUiState.isLoading]/[HomeUiState.isRefreshing]
+     * untouched -- callers manage those.
+     *
+     * Post-launch fixes batch 3: a [VaultRepository.VaultError.NotUnlocked]
+     * failure (auto-lock fired while Home was still open/being refreshed)
+     * is deliberately swallowed here instead of surfacing as
+     * [HomeUiState.errorMessage] -- see [isVaultLocked]'s doc comment for
+     * why. [VaultRepository] has already forced `AuthSessionHolder.lockState`
+     * to `LOCKED` by the time this returns, which is what actually
+     * redirects the user to Unlock (see `MainActivity`'s global lock-state
+     * effect) -- this ViewModel doesn't need to (and must not) do anything
+     * else about it.
+     */
     private suspend fun fetchAndApply() {
         val categoriesResult = repository.listCategories()
         val itemsResult = repository.listItems()
 
         val categories = categoriesResult.getOrElse {
-            _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to load categories")
+            if (!it.isVaultLocked()) {
+                _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to load categories")
+            }
             return
         }
         val items = itemsResult.getOrElse {
-            _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to load vault items")
+            if (!it.isVaultLocked()) {
+                _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to load vault items")
+            }
             return
         }
 

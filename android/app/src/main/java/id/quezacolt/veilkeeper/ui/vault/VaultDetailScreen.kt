@@ -38,6 +38,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,11 +52,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.quezacolt.veilkeeper.VeilKeeperApplication
@@ -100,6 +104,26 @@ fun VaultDetailScreen(
     viewModel: VaultDetailViewModel = viewModel(factory = factory),
 ) {
     val state by viewModel.uiState.collectAsState()
+
+    // Post-launch fixes batch 3: same `refreshSilently`-on-`ON_RESUME`
+    // pattern as HomeScreen/CategoryScreen (see their own doc comments for
+    // the Compose-Navigation-NavBackStackEntry-lifecycle root cause) --
+    // extended to this screen so returning here from the Unlock screen
+    // (pushed on top by MainActivity's global lock-state effect, either for
+    // a normal in-app auto-lock or the "vault got locked while this screen
+    // was open" case this batch fixes) shows freshly-decrypted content
+    // instead of whatever was last loaded before the lock.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshSilently()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     var showDeleteItemDialog by remember { mutableStateOf(false) }
     // Index into state.editBlocks of an image block pending a confirmed
     // removal (Post-launch fixes batch 2, item #2) -- null means no dialog

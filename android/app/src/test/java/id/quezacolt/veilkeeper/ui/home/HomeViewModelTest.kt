@@ -3,6 +3,7 @@ package id.quezacolt.veilkeeper.ui.home
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.AuthSessionHolder
 import id.quezacolt.veilkeeper.data.FakeVaultApi
+import id.quezacolt.veilkeeper.data.VaultLockState
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.ui.auth.MainDispatcherRule
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -193,4 +194,59 @@ class HomeViewModelTest {
         assertEquals(1, viewModel.uiState.value.recentItems.size)
         assertEquals("Pulled Item", viewModel.uiState.value.recentItems.first().title)
     }
+
+    // Post-launch fixes batch 3: the "vault is locked / Retry -> infinite
+    // loop" bug. Root cause: auto-lock (AutoLockManager, see CLAUDE.md's
+    // Sprint 3 entry) can clear the in-memory VDK while Home is still the
+    // visible screen (e.g. mid pull-to-refresh, or the ON_RESUME-triggered
+    // refreshSilently() racing AutoLockManager's own lifecycle callback) --
+    // every repository read then failed with VaultError.NotUnlocked, which
+    // pre-fix was rendered as a generic VeilKeeperErrorState+Retry, and
+    // Retry just re-ran the same doomed call forever, because the vault
+    // really was locked and nothing ever told AuthSessionHolder so.
+
+    @Test
+    fun `refreshSilently does not surface a retryable error when the vault gets locked mid-session, and drives the global lock state instead`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("Work").getOrThrow()
+            repository.createItem(cat.id, "Item A", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+
+            val viewModel = HomeViewModel(repository)
+            advanceUntilIdle()
+            assertEquals(1, viewModel.uiState.value.recentItems.size)
+            assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+
+            // Simulates auto-lock firing (VDK cleared from memory) while
+            // Home is still the screen the user is looking at.
+            AuthSessionHolder.lock()
+
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            // The bug: this used to be non-null ("vault is locked"),
+            // rendered via VeilKeeperErrorState with a Retry button that
+            // could never succeed.
+            assertEquals(null, state.errorMessage)
+            assertFalse(state.isLoading)
+            // This is what actually redirects the user to the Unlock
+            // screen -- MainActivity's global LaunchedEffect(lockState).
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
+
+    @Test
+    fun `refresh does not surface a retryable error when the vault gets locked mid-session`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val viewModel = HomeViewModel(repository)
+            advanceUntilIdle()
+
+            AuthSessionHolder.lock()
+            viewModel.refresh()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(null, state.errorMessage)
+            assertFalse(state.isLoading)
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
 }

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
 import id.quezacolt.veilkeeper.data.VaultRepository
+import id.quezacolt.veilkeeper.data.isVaultLocked
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,7 +61,35 @@ class VaultDetailViewModel(
             val result = repository.getItem(itemId)
             _uiState.value = result.fold(
                 onSuccess = { VaultDetailUiState(isLoading = false, item = it) },
-                onFailure = { VaultDetailUiState(isLoading = false, errorMessage = it.message ?: "Failed to load item") },
+                onFailure = {
+                    if (it.isVaultLocked()) VaultDetailUiState(isLoading = false)
+                    else VaultDetailUiState(isLoading = false, errorMessage = it.message ?: "Failed to load item")
+                },
+            )
+        }
+    }
+
+    /**
+     * Post-launch fixes batch 3: re-fetch without touching [VaultDetailUiState.isLoading]
+     * -- the same `refreshSilently` pattern `HomeViewModel`/`CategoryViewModel`
+     * already have, extended to this screen so returning here from the
+     * Unlock screen (either the normal in-app auto-lock case, or the "vault
+     * got locked while this screen was open" case this batch fixes) shows
+     * freshly-decrypted content instead of whatever was last loaded before
+     * the lock. Guarded against re-entrancy the same way. Deliberately does
+     * *not* touch [VaultDetailUiState.isEditing]/`editBlocks` if a draft was
+     * in progress -- re-seeding a live edit out from under the user on an
+     * unrelated resume would be surprising; if the vault was actually
+     * locked mid-edit, the edit-mode call sites below already exit edit
+     * mode themselves.
+     */
+    fun refreshSilently() {
+        if (_uiState.value.isLoading) return
+        viewModelScope.launch {
+            val result = repository.getItem(itemId)
+            result.fold(
+                onSuccess = { item -> _uiState.value = _uiState.value.copy(item = item) },
+                onFailure = { if (!it.isVaultLocked()) _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to load item") },
             )
         }
     }
@@ -70,7 +99,7 @@ class VaultDetailViewModel(
             val result = repository.deleteItem(itemId)
             _uiState.value = result.fold(
                 onSuccess = { _uiState.value.copy(deleted = true) },
-                onFailure = { _uiState.value.copy(errorMessage = it.message ?: "Failed to delete item") },
+                onFailure = { if (it.isVaultLocked()) _uiState.value else _uiState.value.copy(errorMessage = it.message ?: "Failed to delete item") },
             )
         }
     }
@@ -132,7 +161,17 @@ class VaultDetailViewModel(
         )
     }
 
-    /** Uploads [bytes] as a new attachment against this (already-existing) item immediately, then appends the resulting "image" block to the draft. */
+    /**
+     * Uploads [bytes] as a new attachment against this (already-existing)
+     * item immediately, then appends the resulting "image" block to the
+     * draft. Post-launch fixes batch 3: if the vault got locked mid-edit
+     * (see [isVaultLocked]'s doc comment), this exits edit mode instead of
+     * showing an "upload failed" retry-style error -- the draft would be
+     * re-encrypted against a VDK that no longer exists in memory, so there
+     * is nothing a Retry could do here either; the global lock-state effect
+     * takes the user to Unlock, and they can re-enter edit mode fresh
+     * afterward via [refreshSilently]'s reload + [startEdit].
+     */
     fun addEditImageBlock(filename: String, mimeType: String, bytes: ByteArray) {
         _uiState.value = _uiState.value.copy(isSavingEdit = true, editErrorMessage = null)
         viewModelScope.launch {
@@ -142,7 +181,10 @@ class VaultDetailViewModel(
                     val block = ContentBlockDto(type = "image", label = filename, value = ref.id.toString())
                     _uiState.value.copy(isSavingEdit = false, editBlocks = _uiState.value.editBlocks + block)
                 },
-                onFailure = { e -> _uiState.value.copy(isSavingEdit = false, editErrorMessage = "Failed to upload image: ${e.message}") },
+                onFailure = { e ->
+                    if (e.isVaultLocked()) _uiState.value.copy(isSavingEdit = false, isEditing = false)
+                    else _uiState.value.copy(isSavingEdit = false, editErrorMessage = "Failed to upload image: ${e.message}")
+                },
             )
         }
     }
@@ -167,7 +209,10 @@ class VaultDetailViewModel(
                 val result = repository.deleteAttachment(itemId, attachmentId)
                 _uiState.value = result.fold(
                     onSuccess = { _uiState.value.copy(editBlocks = _uiState.value.editBlocks.filterIndexed { i, _ -> i != index }) },
-                    onFailure = { e -> _uiState.value.copy(editErrorMessage = "Failed to delete attachment: ${e.message}") },
+                    onFailure = { e ->
+                        if (e.isVaultLocked()) _uiState.value.copy(isEditing = false)
+                        else _uiState.value.copy(editErrorMessage = "Failed to delete attachment: ${e.message}")
+                    },
                 )
             }
             return
@@ -193,7 +238,10 @@ class VaultDetailViewModel(
             val result = repository.updateItem(itemId, null, title, state.editBlocks)
             _uiState.value = result.fold(
                 onSuccess = { updated -> _uiState.value.copy(isSavingEdit = false, isEditing = false, item = updated) },
-                onFailure = { e -> _uiState.value.copy(isSavingEdit = false, editErrorMessage = e.message ?: "Failed to save changes") },
+                onFailure = { e ->
+                    if (e.isVaultLocked()) _uiState.value.copy(isSavingEdit = false, isEditing = false)
+                    else _uiState.value.copy(isSavingEdit = false, editErrorMessage = e.message ?: "Failed to save changes")
+                },
             )
         }
     }

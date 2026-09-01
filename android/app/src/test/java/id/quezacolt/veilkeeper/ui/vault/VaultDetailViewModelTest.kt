@@ -3,6 +3,7 @@ package id.quezacolt.veilkeeper.ui.vault
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.AuthSessionHolder
 import id.quezacolt.veilkeeper.data.FakeVaultApi
+import id.quezacolt.veilkeeper.data.VaultLockState
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.ui.auth.MainDispatcherRule
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -289,4 +290,103 @@ class VaultDetailViewModelTest {
         // The attachment must actually be gone server-side.
         assertTrue(repository.downloadAttachment(item.id, ref.id).isFailure)
     }
+
+    // --- Post-launch fixes batch 3: "vault is locked / Retry -> infinite
+    // loop" bug (see HomeViewModelTest's matching cases for the full root-
+    // cause writeup) -- same fix applied to Vault Detail, plus a new
+    // refreshSilently()/ON_RESUME auto-refresh (VaultDetailScreen didn't
+    // have one before this batch) so returning from Unlock shows fresh data.
+
+    @Test
+    fun `refresh does not surface a retryable error when the vault gets locked mid-session`() = runTest(mainDispatcherRule.testDispatcher) {
+        val cat = repository.createCategory("Work").getOrThrow()
+        val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+        val viewModel = VaultDetailViewModel(repository, item.id)
+        advanceUntilIdle()
+
+        // Simulates auto-lock firing (VDK cleared from memory) while Vault
+        // Detail is still the screen the user is looking at.
+        AuthSessionHolder.lock()
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(null, state.errorMessage)
+        assertFalse(state.isLoading)
+        // This is what actually redirects the user to the Unlock screen --
+        // MainActivity's global LaunchedEffect(lockState).
+        assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+    }
+
+    @Test
+    fun `refreshSilently does not surface a retryable error when the vault gets locked mid-session, and drives the global lock state instead`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("Work").getOrThrow()
+            val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+            val viewModel = VaultDetailViewModel(repository, item.id)
+            advanceUntilIdle()
+            assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+
+            AuthSessionHolder.lock()
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(null, state.errorMessage)
+            // Previously-loaded item stays visible (not wiped) while the
+            // global redirect to Unlock happens on top.
+            assertEquals("Original", state.item?.title)
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
+
+    @Test
+    fun `refreshSilently picks up server-side changes after returning from Unlock, such as a renamed title`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("Work").getOrThrow()
+            val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+            val viewModel = VaultDetailViewModel(repository, item.id)
+            advanceUntilIdle()
+
+            // Simulates: the vault got locked, the user re-unlocked
+            // (AuthSessionHolder.unlock() restores the VDK without a fresh
+            // session, exactly like a real password/biometric unlock), and
+            // in between the item changed server-side (e.g. edited from
+            // another device). Must copy the VDK *before* lock() -- lock()
+            // wipes (zeroes) the array in place, not just drops the
+            // reference, matching AuthSessionHolder.clearVdk's real
+            // behavior.
+            val vdk = AuthSessionHolder.vaultDataKey!!.copyOf()
+            AuthSessionHolder.lock()
+            // Real unlock() restores the VDK against the existing session --
+            // this is the actual API a password/biometric unlock uses,
+            // not set() (which would imply a brand-new login).
+            AuthSessionHolder.unlock(vdk)
+            repository.updateItem(item.id, null, "Renamed Elsewhere", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            assertEquals("Renamed Elsewhere", viewModel.uiState.value.item?.title)
+        }
+
+    @Test
+    fun `saveEdit exits edit mode without a retryable error when the vault gets locked mid-edit`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("Work").getOrThrow()
+            val item = repository.createItem(cat.id, "Original", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+            val viewModel = VaultDetailViewModel(repository, item.id)
+            advanceUntilIdle()
+            viewModel.startEdit()
+            viewModel.onEditTitleChange("Changed")
+
+            AuthSessionHolder.lock()
+            viewModel.saveEdit()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertFalse(state.isEditing)
+            assertEquals(null, state.editErrorMessage)
+            assertFalse(state.isSavingEdit)
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
 }

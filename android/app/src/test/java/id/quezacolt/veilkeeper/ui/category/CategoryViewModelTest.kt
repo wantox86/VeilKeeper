@@ -3,6 +3,7 @@ package id.quezacolt.veilkeeper.ui.category
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.AuthSessionHolder
 import id.quezacolt.veilkeeper.data.FakeVaultApi
+import id.quezacolt.veilkeeper.data.VaultLockState
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.ui.auth.MainDispatcherRule
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -148,4 +149,49 @@ class CategoryViewModelTest {
         viewModel.onQueryChange("anything")
         assertEquals(callsAfterInitialLoad, api.listVaultItemsCallCount)
     }
+
+    // Post-launch fixes batch 3: the "vault is locked / Retry -> infinite
+    // loop" bug (see HomeViewModelTest's matching cases for the full root-
+    // cause writeup) -- same fix applied here.
+
+    @Test
+    fun `refreshSilently does not surface a retryable error when the vault gets locked mid-session, and drives the global lock state instead`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("A").getOrThrow()
+            repository.createItem(cat.id, "Item A", listOf(ContentBlockDto(type = "note", value = "n"))).getOrThrow()
+
+            val viewModel = CategoryViewModel(repository, cat.id)
+            advanceUntilIdle()
+            assertEquals(1, viewModel.uiState.value.allItems.size)
+            assertEquals(VaultLockState.UNLOCKED, AuthSessionHolder.lockState.value)
+
+            // Simulates auto-lock firing (VDK cleared from memory) while
+            // Category is still the screen the user is looking at.
+            AuthSessionHolder.lock()
+
+            viewModel.refreshSilently()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(null, state.errorMessage)
+            assertFalse(state.isLoading)
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
+
+    @Test
+    fun `refresh does not surface a retryable error when the vault gets locked mid-session`() =
+        runTest(mainDispatcherRule.testDispatcher) {
+            val cat = repository.createCategory("A").getOrThrow()
+            val viewModel = CategoryViewModel(repository, cat.id)
+            advanceUntilIdle()
+
+            AuthSessionHolder.lock()
+            viewModel.refresh()
+            advanceUntilIdle()
+
+            val state = viewModel.uiState.value
+            assertEquals(null, state.errorMessage)
+            assertFalse(state.isLoading)
+            assertEquals(VaultLockState.LOCKED, AuthSessionHolder.lockState.value)
+        }
 }

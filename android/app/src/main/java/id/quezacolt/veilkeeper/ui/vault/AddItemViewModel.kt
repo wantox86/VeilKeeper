@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import id.quezacolt.veilkeeper.crypto.ContentBlockDto
 import id.quezacolt.veilkeeper.data.VaultRepository
+import id.quezacolt.veilkeeper.data.isVaultLocked
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,7 +105,21 @@ class AddItemViewModel(
             val createResult = repository.createItem(categoryId, title, state.blocks)
             createResult.fold(
                 onSuccess = { item -> finishSaveWithImages(item.id, title, state.blocks, state.pendingImages) },
-                onFailure = { _uiState.value = _uiState.value.copy(isSaving = false, errorMessage = it.message ?: "Failed to save item") },
+                onFailure = {
+                    // Post-launch fixes batch 3: don't show "vault is
+                    // locked" as if it were a normal save failure -- see
+                    // id.quezacolt.veilkeeper.data.isVaultLocked's doc
+                    // comment. MainActivity's global lock-state effect
+                    // (triggered by VaultRepository itself) takes the user
+                    // to Unlock instead; isSaving still clears so Save is
+                    // usable again (now legitimately retryable with a fresh
+                    // VDK) if the user comes back to this still-mounted
+                    // screen after unlocking.
+                    _uiState.value = _uiState.value.copy(
+                        isSaving = false,
+                        errorMessage = if (it.isVaultLocked()) null else it.message ?: "Failed to save item",
+                    )
+                },
             )
         }
     }
@@ -121,7 +136,7 @@ class AddItemViewModel(
             val ref = uploadResult.getOrElse {
                 _uiState.value = _uiState.value.copy(
                     isSaving = false,
-                    errorMessage = "Item was saved, but uploading \"${image.filename}\" failed: ${it.message}",
+                    errorMessage = if (it.isVaultLocked()) null else "Item was saved, but uploading \"${image.filename}\" failed: ${it.message}",
                 )
                 return
             }
@@ -131,7 +146,12 @@ class AddItemViewModel(
         val updateResult = repository.updateItem(itemId, null, title, baseBlocks + imageBlocks)
         _uiState.value = updateResult.fold(
             onSuccess = { _uiState.value.copy(isSaving = false, saved = true) },
-            onFailure = { _uiState.value.copy(isSaving = false, errorMessage = "Images uploaded, but saving the item failed: ${it.message}") },
+            onFailure = {
+                _uiState.value.copy(
+                    isSaving = false,
+                    errorMessage = if (it.isVaultLocked()) null else "Images uploaded, but saving the item failed: ${it.message}",
+                )
+            },
         )
     }
 }

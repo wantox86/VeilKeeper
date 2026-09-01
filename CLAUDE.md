@@ -676,6 +676,119 @@ considered fully done, same disclosure category as prior sprints' gaps.
 
 `.env.example` unchanged (no new secrets, no backend changes). This file updated for this batch.
 
+**Post-launch fixes (batch 3) — complete.** Android-only, `backend/` untouched (verified via
+`git status`; `docker ps` up front showed `veilkeeper-api`/`veilkeeper-mysql` already running
+healthy, zero collision, nothing brought up/down). One item, from real feedback using the app on a
+physical device: "idle for a while, came back, got a 'vault is locked' error with a Retry button
+that just loops forever."
+
+1. **"Vault is locked / Retry -> infinite loop" bug -- root cause confirmed as diagnosed, fixed.**
+   The initial diagnosis (given at the start of this batch) was correct: every `VaultRepository`
+   method already returned `VaultError.NotUnlocked` when `AuthSessionHolder.vaultDataKey` was null
+   (auto-lock fired while Home/Category/Vault-Detail was still the open screen), but that failure
+   was rendered by `HomeViewModel`/`CategoryViewModel`/`VaultDetailViewModel` as a generic
+   `VeilKeeperErrorState`-with-Retry -- and Retry just re-ran the same call against a still-missing
+   VDK, failing the exact same way forever, never routing through `AuthSessionHolder.lockState`'s
+   existing `LOCKED` transition or `MainActivity`'s existing global redirect to Unlock.
+   - **What was NOT the bug, confirmed by code review**: `AuthSessionHolder`'s own invariant already
+     guaranteed `vaultDataKey == null` implies `lockState != UNLOCKED` (every code path that clears
+     the VDK -- `lock()`/`set()`/`clear()` -- also updates `lockState` in the same call), and
+     `MainActivity`'s `LaunchedEffect(lockState)` (from batch 2) already reacts to `LOCKED` by
+     navigating to Unlock. So by construction, `lockState` was *already* `LOCKED` by the time any
+     ViewModel saw `NotUnlocked` -- the redirect mechanism itself was never broken. The bug was
+     entirely that (a) nothing forced that redirect to happen deterministically/synchronously with
+     the failure the user was looking at (it relied on `AutoLockManager`'s separately-timed
+     lifecycle callback having *already* run, which real-device Compose recomposition/lifecycle
+     dispatch timing could evidently desync from), and (b) even when the redirect did eventually
+     fire, the screen underneath had already painted a Retry button that invited the user into a
+     dead-end loop instead of just... doing nothing and letting Unlock cover it.
+   - **Fix -- two layers, matching the batch's own instructions**:
+     1. `VaultRepository` (`android/app/.../data/VaultRepository.kt`) gained a private
+        `notUnlockedFailure()` helper, now used at all 6 call sites that used to construct
+        `Result.failure(VaultError.NotUnlocked(...))` directly (`listItems`/`getItem`/
+        `createItem`/`updateItem`/`uploadAttachment`/`downloadAttachment`). It calls
+        `AuthSessionHolder.lock()` *before* returning the failure -- `lock()` is idempotent (a
+        no-op if already `LOCKED`/`LOGGED_OUT`, see its own doc comment), so this is always safe
+        and can never fight a fresher state (e.g. a real logout racing a stale in-flight call stays
+        `LOGGED_OUT`, doesn't get bumped to `LOCKED` -- covered by a new repository test). This
+        makes "the VDK is gone" -> "global state is `LOCKED`" a direct, synchronous consequence of
+        the exact call the UI is reacting to, instead of two independently-timed paths.
+     2. New top-level `fun Throwable.isVaultLocked(): Boolean` (same file) -- true only for
+        `VaultError.NotUnlocked`. Every `VaultRepository`-consuming ViewModel
+        (`HomeViewModel`, `CategoryViewModel`, `VaultDetailViewModel`, `AddItemViewModel`) now
+        checks this before setting an `errorMessage`/`editErrorMessage`: if true, the failure is
+        swallowed (no error text, no Retry button rendered) instead of surfaced, since
+        `MainActivity`'s global effect is about to cover the screen with Unlock anyway and a Retry
+        tap could never succeed. `VeilKeeperErrorState`'s Retry button itself is untouched and
+        still exactly right for every *other* error (network timeout, 500, etc.) -- this is a
+        call-site special-case, not a change to the shared component (per this batch's own
+        instruction not to touch genuinely-transient-error handling).
+   - **Vault Detail didn't have an auto-refresh-on-resume at all before this batch** (unlike Home/
+     Category, which got it in batches 1/2) -- added `VaultDetailViewModel.refreshSilently()`
+     (same guarded-against-re-entrancy pattern as the other two) wired to `VaultDetailScreen`'s
+     `ON_RESUME` via the same `DisposableEffect(LocalLifecycleOwner.current)` pattern. This is what
+     makes item requirement #2 (return to the *same* screen post-unlock, with fresh data) hold for
+     Vault Detail too, not just Home/Category -- confirmed live (see below) that returning from
+     Unlock lands back on the exact item screen the user was on, not Home.
+   - **Edit-mode call sites** (`saveEdit`/`addEditImageBlock`/`removeEditBlock`'s image-attachment
+     branch) also check `isVaultLocked()`: on a lock-mid-edit, they exit edit mode
+     (`isEditing = false`) instead of showing an "upload/save failed" retry-style error, since the
+     draft can't be safely re-encrypted against a VDK that's gone -- the user re-enters edit mode
+     fresh (via `startEdit()`) after unlocking and `refreshSilently()`'s reload, rather than
+     resuming a stale draft. Documented as a deliberate simplification, not a gap: re-seeding a
+     live edit automatically across a lock/unlock cycle would be new state-reconciliation machinery
+     for an edge case (locking mid-edit specifically) this batch's scope didn't ask for.
+   - **Ambiguity resolved without stopping** (per this batch's own instruction, since a
+     security-adjacent call was made): whether `refreshSilently()`'s `ON_RESUME`-driven reload
+     should also try to preserve/re-seed an in-progress edit draft if the vault got locked
+     mid-edit. Decided **not to** -- `refreshSilently()` only ever touches `VaultDetailUiState.item`,
+     never `isEditing`/`editBlocks`, so an edit in progress when an *unrelated* resume happens
+     (e.g. the normal in-app auto-lock case, not this bug) is left alone; the lock-mid-edit case
+     specifically is instead handled by the call sites exiting edit mode themselves (previous
+     bullet). Keeping these two concerns separate avoided a more tangled "was this resume because
+     of a lock, or just a normal return-to-screen" branch inside `refreshSilently()` itself.
+   - **Testing**: `VaultRepositoryTest` gained 3 new cases -- a `NotUnlocked` failure forces
+     `lockState` to `LOCKED` when a session was active, a `NotUnlocked` failure after a real
+     logout stays `LOGGED_OUT` (doesn't get incorrectly resurrected to `LOCKED`), and
+     `isVaultLocked()` is true only for `NotUnlocked`. `HomeViewModelTest`/`CategoryViewModelTest`
+     each gained 2 new cases (`refresh`/`refreshSilently` don't surface an error and drive
+     `lockState` to `LOCKED` when the vault is locked mid-session, simulated via a direct
+     `AuthSessionHolder.lock()` call standing in for `AutoLockManager` firing while the screen is
+     open). `VaultDetailViewModelTest` gained 4 new cases: the same `refresh`/`refreshSilently`
+     no-error-drives-LOCKED pair, `refreshSilently` actually picks up a server-side change made
+     while locked (verifying the new auto-refresh-on-resume end to end, not just that it doesn't
+     error), and `saveEdit` exits edit mode cleanly on a lock-mid-edit. **154 unit tests passing**
+     total (up from 143), all green.
+   - **Emulator verification -- performed, this is the item that mattered most to verify for
+     real, and it directly reproduced the reported bug's actual trigger (backgrounding, not a
+     process kill) for the first time**: booted the pre-existing `veilkeeper_test` AVD (Pixel 6,
+     API 35, headless) against the live `veilkeeper-api`/`veilkeeper-mysql` stack (confirmed
+     reachable via `curl https://veilkeeper.quezacolt.my.id/health` before starting, `200`).
+     Registered a fresh test account, logged in for real (full on-device Argon2id/HKDF/AES-GCM),
+     added a real vault item, opened it in Vault Detail. Confirmed this build's default auto-lock
+     timeout is still `IMMEDIATE` (per batch 1), then sent the app to the background with
+     `adb shell input keyevent KEYCODE_HOME` (a normal Home-button background, **not**
+     `force-stop` -- the process stays alive throughout, exactly matching "idle a while, came
+     back" rather than the swipe-kill/force-stop scenario batch 2 already covered) and brought it
+     back to the foreground via `am start`. **Confirmed the app landed directly on the "Vault
+     locked" Unlock screen with the email pre-filled -- not the old Vault-Detail "vault is locked"
+     error-with-Retry state** -- `uiautomator dump`'s view hierarchy showed the Unlock screen, and
+     `adb logcat` showed no crash/exception for the app's PID across the whole sequence. Entered
+     the correct password -> unlocked straight back to the *same* Vault Detail screen (title and
+     content block intact, not bounced to Home), confirming both the bug fix and the nav-position
+     preservation/auto-refresh requirement live, not just in unit tests. Re-backgrounded/
+     foregrounded once more and entered the *wrong* password -> stayed on Unlock with a "wrong
+     password" error, confirming the fix doesn't weaken authentication. Emulator shut down
+     cleanly afterward (`adb -e emu kill`); `docker ps` reconfirmed both `veilkeeper-*` and the
+     Qoder `vk-sprint3-*` containers were undisturbed throughout.
+   - **Not exercised this batch**: the screen-off-specific trigger (`AutoLockManager.onScreenOff`)
+     and a real multi-minute idle timeout (as opposed to the `IMMEDIATE` default's
+     background/foreground trigger) -- both share the exact same `AuthSessionHolder.lock()` call
+     path already verified above, so this is judged a lower-value repeat rather than a genuine
+     coverage gap, but is disclosed rather than silently assumed identical.
+
+`.env.example` unchanged (no new secrets, no backend changes). This file updated for this batch.
+
 ## Project summary (all 8 sprints complete)
 
 VeilKeeper is a complete, independent implementation of the "Veil Keepers" spec
@@ -708,9 +821,10 @@ build of the same spec running alongside it on the same homelab host.
   final pass, self-hosted runner explicitly deferred as disclosed future work.
 
 **End-to-end state**: backend `go test -race -cover ./...` passes (65 tests as of Sprint 5,
-unchanged since -- Sprints 6-7 touched no backend code); Android
-`./gradlew assembleDebug testDebugUnitTest lintDebug` passes (112 unit tests as of Sprint 6,
-0 lint errors); all three GitHub Actions workflows (backend/android/security) green as of the
+unchanged since -- Sprints 6-7 and all post-launch fix batches touched no backend code); Android
+`./gradlew assembleDebug testDebugUnitTest lintDebug` passes (**154 unit tests** as of post-launch
+fixes batch 3, up from 112 at Sprint 6, 0 lint errors, same 16 pre-existing warnings throughout);
+all three GitHub Actions workflows (backend/android/security) green as of the
 last commit touching CI-relevant files; `docker compose up -d` works from a fresh clone with
 zero collision against the parallel Qoder build sharing the same Docker host throughout every
 sprint's manual verification. Every crypto/architecture decision the base spec left

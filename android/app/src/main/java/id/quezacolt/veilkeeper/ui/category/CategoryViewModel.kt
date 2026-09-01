@@ -6,6 +6,7 @@ import id.quezacolt.veilkeeper.data.Category
 import id.quezacolt.veilkeeper.data.DecryptedVaultItem
 import id.quezacolt.veilkeeper.data.VaultRepository
 import id.quezacolt.veilkeeper.data.VaultSearch
+import id.quezacolt.veilkeeper.data.isVaultLocked
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,16 +69,32 @@ class CategoryViewModel(
         viewModelScope.launch { fetchAndApply() }
     }
 
+    /**
+     * Post-launch fixes batch 3: a
+     * [VaultRepository.VaultError.NotUnlocked] failure (auto-lock fired
+     * while this screen was still open) never sets [CategoryUiState.errorMessage]
+     * -- see [isVaultLocked]'s doc comment. `isLoading` is still cleared so
+     * the screen doesn't stay stuck full-screen-loading underneath the
+     * Unlock screen that `MainActivity`'s global lock-state effect is about
+     * to push on top (triggered by [VaultRepository] itself having already
+     * flipped `AuthSessionHolder.lockState` to `LOCKED`).
+     */
     private suspend fun fetchAndApply() {
         val categoriesResult = repository.listCategories()
         val itemsResult = repository.listItems(categoryId)
 
         val categories = categoriesResult.getOrElse {
-            _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load category")
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                errorMessage = if (it.isVaultLocked()) null else it.message ?: "Failed to load category",
+            )
             return
         }
         val items = itemsResult.getOrElse {
-            _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = it.message ?: "Failed to load items")
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                errorMessage = if (it.isVaultLocked()) null else it.message ?: "Failed to load items",
+            )
             return
         }
 
