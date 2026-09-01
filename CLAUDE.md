@@ -859,14 +859,15 @@ until Sprint 8; noted here so it isn't forgotten by then.
 Planned roadmap (subject to revision as sprints land):
 
 - **Sprint 1** — project scaffold + crypto foundation. Complete, see below.
-- **Sprint 2 (this one)** — Login/Register UI wired to the real crypto module + backend auth
+- **Sprint 2** — Login/Register UI wired to the real crypto module + backend auth
   API (mirrors Android Sprint 1's UI scope, using the crypto foundation Sprint 1 already
   built and tested). Complete, see below.
-- **Sprint 3-7 (planned)** — vault CRUD UI, categories, secure UX equivalents (session
-  handling, auto-lock -- no biometric/Keystore equivalent exists on Web, needs its own
-  design decision when reached), search, attachments, UI polish. Not yet scoped in detail;
-  each should get its own CLAUDE.md decisions section if anything is ambiguous, same as
-  Android's sprints did.
+- **Sprint 3 (this one)** — vault foundation: categories + vault item CRUD, client-side
+  encryption via the VDK. Complete, see below.
+- **Sprint 4-7 (planned)** — secure UX equivalents (session handling, auto-lock -- no
+  biometric/Keystore equivalent exists on Web, needs its own design decision when
+  reached), search, attachments, UI polish. Not yet scoped in detail; each should get its
+  own CLAUDE.md decisions section if anything is ambiguous, same as Android's sprints did.
 - **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
@@ -1119,3 +1120,107 @@ Delivered:
   backend itself already did against the same live database.
 - No Web CI workflow added this sprint either (still allowed per the CI policy in the roadmap
   intro above -- Web CI is optional, never a hard gate, confirmed by the user).
+
+### Web Sprint 3 (Vault Foundation -- categories + vault item CRUD) — complete
+
+Mirrors Android Sprint 2's scope, adapted to Vue/TS. **No backend changes** -- the
+categories/vault-item endpoints (`GET/POST /api/v1/categories`, `PUT/DELETE
+/api/v1/categories/{id}`, `GET/POST /api/v1/vault/items`, `GET/PUT/DELETE
+/api/v1/vault/items/{id}`) already existed from Android Sprint 2; this sprint only added a
+Web client consuming them.
+
+Delivered:
+
+- `web/src/types/vault.ts` -- wire DTOs (`CategoryDto`, `VaultItemDto`) matching the backend's
+  Go structs field-for-field, plus the plaintext `VaultItemPayload`/`ContentBlock` shape
+  (`type: "text" | "secret" | "note"`, `label: string | null`) mirroring Android's
+  `VaultItemCrypto.kt` -- deliberately using explicit `null` (not `undefined`) for an absent
+  label so the JSON shape matches Android's `kotlinx.serialization` (`encodeDefaults = true`)
+  output byte-for-byte, since either client may decrypt an item created by the other.
+- `web/src/crypto/vaultItemCrypto.ts` -- `encryptVaultItemPayload`/`decryptVaultItemPayload`,
+  mirroring `VaultItemCrypto.kt` 1:1 (JSON-serialize, then `aesGcm.ts` encrypt/decrypt with the
+  VDK, fresh nonce per call).
+- `web/src/services/vaultApi.ts` -- thin authenticated HTTP wrappers (bearer token) over the
+  categories/vault-item endpoints, following the same Api-is-dumb-HTTP split as `authApi.ts`.
+  **Refactor, not new complexity**: `ApiError`/`parseJsonOrThrow` moved from `authApi.ts` up
+  into `api.ts` (re-exported from `authApi.ts` for compatibility) so both services share one
+  implementation instead of duplicating it.
+- `web/src/stores/vault.ts` (Pinia) -- categories + current item-list state, one store (not
+  split into separate categories/items stores -- the state is small and closely related,
+  splitting would be overengineering for this scope). Every action calls `requireSession()`
+  first (throws if there's no active `sessionToken`/`vdk` in `stores/auth.ts`) -- this store
+  never fetches/decrypts anything unless the router's `requiresAuth` guard has already let the
+  user in.
+- Views: `DashboardView.vue` (now the vault Home: category list with item counts + a "recent
+  items" list, plus inline category creation -- still the `/dashboard` route from Sprint 2, now
+  with real content instead of a placeholder), `CategoryView.vue` (`/categories/:id` -- item
+  list, inline rename, delete-with-reassign-choice), `VaultItemView.vue` (`/items/:id` --
+  decrypted content blocks, secrets masked behind a "Reveal" toggle, delete), and
+  `VaultItemFormView.vue` (`/items/new` and `/items/:id/edit` -- title, category select,
+  add/remove content blocks). Attachment/image blocks are explicitly out of scope (Web Sprint
+  6, per the roadmap above) -- the form only offers `text`/`secret`/`note`.
+- **Delete category behavior: kept byte-for-byte identical to Android/backend, no Web-specific
+  deviation.** `vault.deleteCategory(id, reassignTo?)` passes straight through to
+  `DELETE /api/v1/categories/{id}[?reassign_to=<id>]` -- omitting `reassignTo` relies on the
+  backend's own default (move to the lazily-created Uncategorized category, per Resolved Design
+  Decision #5 above). `CategoryView.vue`'s delete-confirmation UI offers a dropdown of the
+  user's other categories with "Uncategorized (default)" pre-selected, so the default path is
+  the zero-click path. This was a genuinely ambiguous point worth flagging even though the
+  decision was straightforward: the task allowed "consistent with Android or a documented
+  deviation," and consistency was chosen because CLAUDE.md's own Decision #5 already treats this
+  as a cross-client contract ("Web HARUS konsisten"), not a per-client UX choice -- there was no
+  reasonable argument for Web to special-case it.
+- **Two real bugs found via Playwright against a real browser, invisible to the Vitest suite**
+  (same category of finding as Web Sprint 2's two bugs) -- both fixed:
+  1. `DashboardView.vue`'s `loadAll()` and `CategoryView.vue`'s `load()` originally wrapped their
+     `await`s in `try { ... } finally { ... }` with no `catch` -- any store-action rejection
+     (e.g. a session invalidated mid-flight, or a 404 on a stale category link) became an
+     unhandled promise rejection logged to the browser console instead of surfacing through
+     `vault.errorMessage`'s existing banner. Both now `catch` and swallow (the banner/empty-state
+     UI already covers the user-facing side); this is exactly the class of bug Sprint 2's README
+     said Playwright verification exists to catch that Vitest cannot.
+  2. None found in the crypto layer this sprint -- `aesGcm.ts`'s Sprint 2 AAD-omission fix
+     already covers the vault-item encryption path too (it's the same function), and no new
+     browser-vs-Node WebCrypto divergence showed up.
+- **Vitest: 60 tests passing** (up from 36 in Sprint 2) -- new: `crypto/__tests__/
+  vaultItemCrypto.test.ts` (full encrypt -> base64-wire-simulation -> decrypt round-trip, unique
+  nonce per call, wrong-VDK rejection, tamper rejection, zero-content-block edge case --
+  the crypto-integration-at-the-item-level test the task required, not just the primitive),
+  `services/__tests__/vaultApi.test.ts` (request shapes incl. `reassign_to` query param
+  presence/absence, `ApiError` on 404/409), `stores/__tests__/vault.test.ts` (real crypto,
+  mocked `vaultApi` only: `requireSession()` throws with no session, `fetchItems` proves real
+  decryption happened (not passthrough), `createItem` proves the server call never receives
+  plaintext, `deleteCategory` behavior with/without `reassignTo`, 403/404 both map to the same
+  user-facing "doesn't exist or no access" message). `npm run lint` / `format:check` / `vue-tsc
+  -b` / `npm run build` all clean.
+- **End-to-end verification, performed for real against the live backend** (`npm run dev` +
+  Playwright/Chromium, installed temporarily via `npm install --no-save playwright` and
+  uninstalled afterward -- not a project dependency, same pattern as Sprints 1/2; `web/.env`
+  pointed at `https://veilkeeper.quezacolt.my.id/`, deleted afterward). All 15 scripted checks
+  passed: register+login; create category; create a vault item with three content blocks
+  (text/secret/note); item detail shows the decrypted title and text/note values with the secret
+  masked by default and revealed on click; edit the item and confirm the new title persists;
+  delete the category the item is in and confirm (a) it redirects cleanly and (b) the item still
+  exists, now reassigned to Uncategorized -- not deleted; **log out and log back in, then
+  re-open the same item and confirm it still decrypts correctly** (proves a real
+  encrypt-on-server/decrypt-after-fresh-login round trip, not a same-session cache -- this was
+  the specific scenario called out as most important to prove); zero unexpected browser console
+  errors across that whole flow (after the two bug fixes above; the browser's own
+  "Failed to load resource" network-log lines for expected-error responses like the 404 below
+  are filtered out of that check, same as they would be in a real browser's console for any
+  4xx/5xx fetch regardless of app-level handling). Separately, **registered a second user and
+  confirmed they get a clear "doesn't exist, or you don't have access" message (not the item's
+  title, not a crash) when visiting the first user's item by ID** -- the backend enforces
+  ownership by scoping every query to the authenticated user (returns a plain 404, confirmed by
+  reading `backend/internal/httpserver/vault_handlers.go` -- there's no separate 403 path in this
+  handler set), and this client now handles that response correctly. **Verified the database
+  itself holds only ciphertext**: read-only `SELECT` against the live `veilkeeper-mysql`
+  container's `vault_items` table confirmed `encrypted_payload` for the test item is a 257-byte
+  binary blob (nonce+ciphertext+tag), and `SELECT COUNT(*) ... WHERE encrypted_payload LIKE
+  '%sprint3user%' OR ... '%S3cretValue%' OR ... '%My Sprint 3 Item%'` returned `0` -- no
+  plaintext title, label, or value is present anywhere in that column. **This creates a small
+  number of permanent (harmless) test accounts/categories/items in the live production
+  database** (`web-sprint3-e2e-{a,b}-*@example.com`), same accepted pattern as Sprints 1/2's own
+  live-backend verification.
+- No Web CI workflow added this sprint either (still optional per the roadmap intro's CI
+  policy).

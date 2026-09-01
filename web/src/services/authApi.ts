@@ -1,6 +1,5 @@
-import { apiFetch } from './api'
+import { apiFetch, ApiError, parseJsonOrThrow } from './api'
 import type {
-  ApiErrorBody,
   LoginRequest,
   LoginResponse,
   PreloginResponse,
@@ -14,36 +13,11 @@ import type {
  * This layer only knows about HTTP/JSON; all crypto orchestration happens
  * one level up, in `stores/auth.ts` (mirrors Android's
  * Repository-does-crypto-orchestration / Api-is-dumb-HTTP split).
+ *
+ * `ApiError` re-exported for backward compatibility -- it now lives in
+ * `api.ts` (Web Sprint 3) so `vaultApi.ts` can share it too.
  */
-export class ApiError extends Error {
-  readonly status: number
-  readonly code: string
-
-  constructor(status: number, code: string, message: string) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.code = code
-  }
-}
-
-async function parseJsonOrThrow<T>(response: Response): Promise<T> {
-  // Never assume a body is present/parseable -- a network-layer failure or
-  // an unexpected non-JSON error page must still surface a sane ApiError
-  // rather than an unrelated JSON-parse exception.
-  const body = await response.json().catch(() => null)
-
-  if (!response.ok) {
-    const errorBody = body as ApiErrorBody | null
-    throw new ApiError(
-      response.status,
-      errorBody?.error ?? 'unknown_error',
-      errorBody?.message ?? `Request failed with HTTP ${response.status}`,
-    )
-  }
-
-  return body as T
-}
+export { ApiError }
 
 function postJSON(path: string, body: unknown): Promise<Response> {
   return apiFetch(path, {
