@@ -835,3 +835,139 @@ environment across all 8 sprints) remain open and should be manually verified on
 device before this ships to an actual end user -- this is the single biggest piece of
 unverified work across the whole project, called out consistently sprint over sprint rather
 than glossed over.
+
+**Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
+below for its own tracking. Web Sprint 1 (scaffold + crypto foundation) is complete as of the
+most recent commit touching `web/`; Android/backend above are unaffected (Web Sprint 1 touched
+`web/` only).
+
+## Web client (Sprint roadmap, separate from the 8 Android sprints above)
+
+A Web client (`web/`, Vue 3 + TypeScript + Vite, monorepo-sibling of `android/`/`backend/`) is
+a later addition to this repo, planned across its own 8-sprint roadmap, mirroring the
+Android sprint documentation style. **CI policy differs from Android**: GitHub Actions is
+mandatory for Android but only *optional* for Web (a basic build+lint workflow may exist but
+is never a hard release gate) -- confirmed by the user, overriding anything implying otherwise
+elsewhere. **Deployment policy differs from Android+Backend too**: unlike the Android app and
+backend (deliberately public, see `signpdf`-style live exposure patterns elsewhere on this
+host), the Web client's eventual deployment (Sprint 8) **must be internal/LAN-only** and must
+never be registered with the `cloudflared` tunnel or otherwise exposed publicly. Not relevant
+until Sprint 8; noted here so it isn't forgotten by then.
+
+Planned roadmap (subject to revision as sprints land):
+
+- **Sprint 1 (this one)** — project scaffold + crypto foundation. See below.
+- **Sprint 2 (planned)** — Login/Register UI wired to the real crypto module + backend auth
+  API (mirrors Android Sprint 1's UI scope, using the crypto foundation Sprint 1 already
+  built and tested).
+- **Sprint 3-7 (planned)** — vault CRUD UI, categories, secure UX equivalents (session
+  handling, auto-lock -- no biometric/Keystore equivalent exists on Web, needs its own
+  design decision when reached), search, attachments, UI polish. Not yet scoped in detail;
+  each should get its own CLAUDE.md decisions section if anything is ambiguous, same as
+  Android's sprints did.
+- **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
+
+### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
+
+Delivered:
+
+- `web/` (Vue 3.5 + TypeScript + Vite 8, package name `web`), folder structure
+  `src/{components,views,layouts,stores,services,crypto,router,types}` per the plan. Default
+  Vite template content (HelloWorld component, hero image, `#app`-centric CSS) stripped out;
+  replaced with a minimal single-route app (`/` → `HealthCheckView.vue`) using Vue Router and
+  a Pinia store (`stores/health.ts`) for the health-check page's state.
+- `src/crypto/` -- mirrors Android's `crypto/` package (`android/app/src/main/java/id/quezacolt/veilkeeper/crypto/`)
+  field-for-field:
+  - `kdfParams.ts`: `DEFAULT_KDF_PARAMS` = `{ memoryKiB: 65536, iterations: 3, parallelism: 4 }`,
+    copied verbatim from Android's `KdfParams.DEFAULT`.
+  - `hkdf.ts`: HKDF-SHA256 via native `crypto.subtle` (`"HKDF"` algorithm). **Important
+    parity detail**: Web Crypto's HKDF does *not* apply RFC 5869's "no salt -> HashLen zero
+    bytes" default the way a hand-rolled implementation (Android's `Hkdf.kt`) does -- an
+    omitted/empty salt there means a literal zero-length HMAC key, not a 32-zero-byte one.
+    This implementation always passes an explicit 32-byte zero salt to match Android exactly.
+  - `aesGcm.ts`: AES-256-GCM via native `crypto.subtle`. Wire format
+    (`nonce(12) || ciphertext+tag`) matches Android's `javax.crypto.Cipher` output exactly.
+  - `argon2.ts`: Argon2id via `argon2-browser` (WASM), per the `spike/kmp-web-crypto`
+    recommendation -- the one primitive Web Crypto API doesn't provide.
+    `public/argon2.wasm` is a committed copy of `node_modules/argon2-browser/dist/argon2.wasm`
+    (the library fetches this by URL at runtime in a real browser; re-copy it if the
+    `argon2-browser` version is ever bumped).
+  - `vaultCrypto.ts`: orchestrates the full key hierarchy (MasterKey -> AuthKey/WrapKey via
+    HKDF -> VDK generate/wrap/unwrap via AES-GCM), mirroring `VaultCrypto.kt` 1:1 including the
+    same HKDF info strings (`veilkeeper:auth:v1` / `veilkeeper:wrap:v1`) and salt/key lengths.
+    Not wired into any UI yet -- exists now so the full hierarchy is testable end-to-end ahead
+    of Sprint 2's Login/Register screens.
+  - `src/types/argon2-browser.d.ts`: hand-written ambient module declaration (the npm package
+    ships no `.d.ts` and there's no `@types/argon2-browser`).
+- **Vitest suite, 18 tests, all passing** (`npm test`), covering exactly what CLAUDE.md/the
+  task required to be *proven*, not assumed:
+  - `hkdf.test.ts`: RFC 5869 Appendix A.3 Test Case 3 -- the *same* vector Android's
+    `HkdfTest.kt` uses -- plus determinism and domain-separation checks.
+  - `aesGcm.test.ts`: round-trip (with/without AAD), unique-nonce-per-call, wire-format byte
+    length, tamper rejection, wrong-key rejection, wrong-key-length rejection.
+  - `argon2.test.ts`: (1) the official RFC 9106 Section 5.3 Argon2id test vector -- reproduced
+    independently here, not just trusted from the spike; (2) **the exact
+    password/salt/`KdfParams.DEFAULT` scenario from `spike/kmp-web-crypto`'s
+    `poc/verify-argon2-wasm.cjs`**, asserting the same
+    `853b272a44db1421c02962669a55eb0994f3cab385ed1c4c79253eee19bab49e` hash the spike proved
+    byte-identical to `argon2-cffi` (same native reference-C lineage as Android's `argon2kt`).
+    This is the strongest byte-identical evidence obtainable in this sandbox (no physical
+    Android device available here to run `Argon2idMasterKeyDeriverInstrumentedTest`
+    side-by-side) -- confirmed **matching**, not merely "should match."
+  - `vaultCrypto.test.ts`: full registration->login simulation (derive, wrap, re-derive from
+    the same password, unwrap, assert VDK round-trips byte-identical), domain separation, and
+    wrong-password-fails-to-unwrap.
+  - **Environment quirk discovered and documented, not silently patched around**:
+    `argon2-browser`'s compiled Emscripten glue picks its WASM-loading strategy by checking
+    `typeof fetch === 'function'`, not by checking whether it's actually in a browser. Node
+    18+'s global `fetch` makes it take a `fetch(<absolute filesystem path>)` branch under
+    Vitest's `node` environment, which Node's `fetch` (undici) rejects with `TypeError: Failed
+    to parse URL`. `vitest.setup.ts` deletes `global.fetch` before tests run (matching the
+    same workaround the spike's own `poc/verify-argon2-wasm.cjs` used) -- this only affects the
+    Vitest process, never the real browser build (`src/crypto/argon2.ts` never touches `fetch`
+    directly; it points `window.argon2WasmPath` at `/argon2.wasm` instead).
+- `src/services/api.ts` + `src/services/health.ts`: base API client (`VITE_API_BASE_URL` env
+  var, default `http://localhost:18091/`, never hardcoded -- mirrors Android's `apiBaseUrl`
+  Gradle property pattern) and a `GET /health` call. `stores/health.ts` (Pinia) wraps it with
+  idle/checking/ok/error state; `views/HealthCheckView.vue` is the only functional page this
+  sprint, as scoped.
+- `web/README.md`: install/dev/build/env-var instructions, crypto module documentation.
+  `web/.env.example` added (no real values, gitignored `.env` pattern matches repo root).
+- Tooling: ESLint flat config (`eslint.config.js`, `typescript-eslint` + `eslint-plugin-vue`
+  `flat/recommended` + `eslint-config-prettier`) and Prettier (`.prettierrc.json`) -- both
+  clean (`npm run lint`, `npm run format:check`). `npm run build` (`vue-tsc -b && vite build`)
+  succeeds. No Web CI workflow was added this sprint (allowed per the CI policy above -- this
+  is disclosed as not-yet-done, not silently skipped).
+
+**Disclosed blocker, confirmed with a real headless browser (Playwright/Chromium), not
+assumed**: the Go backend (`backend/internal/httpserver`) has **no CORS middleware at all** --
+confirmed via `grep -i cors backend/internal/httpserver/*.go` (zero matches). A real browser
+loading the Web app and calling `GET /health` gets network-level success but the browser
+blocks the JS from reading the response: `Access to fetch at '.../health' from origin
+'http://localhost:5183' has been blocked by CORS policy: No 'Access-Control-Allow-Origin'
+header is present.` Verified against **both** a local `docker compose up -d` backend
+(`http://localhost:18091`) and the live public backend
+(`https://veilkeeper.quezacolt.my.id`) -- same failure both times, root cause is backend-side,
+not an environment/config issue on the Web side. The health-check page itself is implemented
+correctly (its `error` state and message display exactly this failure, by design -- see
+`HealthCheckView.vue`). **Not fixed this sprint**: the task explicitly prohibits touching the
+live backend this sprint (see the Sprint 1 task's constraints), and adding CORS middleware is
+a backend code change, not a new standalone service, so it doesn't fall under the
+"nambah service baru buat web" exception either. **This should be resolved by Sprint 2 at the
+latest** (Login/Register will need working cross-origin requests to function at all, not just
+to display a status). Suggested minimal fix when that sprint starts: an
+`Access-Control-Allow-Origin` middleware in `backend/internal/httpserver` scoped to the
+Web app's own origin(s) (dev + eventual internal/LAN-only deployment origin, per the
+Sprint 8 policy above -- never `*` given this is a zero-knowledge auth backend).
+
+Manual verification performed: `npm run dev` starts cleanly and serves the app; confirmed via
+Playwright/Chromium (headless, installed temporarily for this verification, not a project
+dependency) that the page renders, Pinia/Vue Router work, and the health-check flow actually
+executes a real network request to both a local and the live backend (`curl
+https://veilkeeper.quezacolt.my.id/health` directly returns `{"status":"ok"}`, confirming the
+backend itself is healthy -- the CORS block above is the browser's own enforcement, not a
+backend outage). No `web/.env` file was left behind (only `.env.example`, gitignored pattern
+verified). `docker ps` reconfirmed no interaction with/collision against the running
+`veilkeeper-*` or Qoder `vk-sprint3-*` stacks -- Sprint 1 only ever issued read-only `GET
+/health` requests against the already-running `veilkeeper-api` container, never restarted or
+reconfigured it.
