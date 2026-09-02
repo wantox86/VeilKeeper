@@ -837,11 +837,11 @@ unverified work across the whole project, called out consistently sprint over sp
 than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
-below for its own tracking. Web Sprint 4 (Secure UX) is complete as of the most recent
+below for its own tracking. Web Sprint 5 (Search) is complete as of the most recent
 commit touching `web/`; Android/backend are unaffected by Web sprints themselves, though the
 backend did get a small, carefully-verified CORS middleware addition just before Web Sprint 2
 (see "Backend CORS fix" above) since Web Sprint 2 needed working cross-origin requests to
-function at all. Web Sprint 4 itself needed **no** backend changes at all.
+function at all. Web Sprint 4 and Web Sprint 5 both needed **no** backend changes at all.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -864,12 +864,15 @@ Planned roadmap (subject to revision as sprints land):
   built and tested). Complete, see below.
 - **Sprint 3** — vault foundation: categories + vault item CRUD, client-side
   encryption via the VDK. Complete, see below.
-- **Sprint 4 (this one)** — Secure UX: secret visibility/copy, clipboard auto-clear
+- **Sprint 4** — Secure UX: secret visibility/copy, clipboard auto-clear
   (with its real Clipboard API limitations disclosed, not assumed away), Web Session
   Lock (inactivity/tab-hidden lock + offline unlock, no biometric/Keystore equivalent
   exists on Web), Settings screen. Complete, see below.
-- **Sprint 5-7 (planned)** — search, attachments, UI polish. Not yet scoped in detail;
-  each should get its own CLAUDE.md decisions section if anything is ambiguous, same as
+- **Sprint 5 (this one)** — global search over the client-side-decrypted vault (mirrors
+  Android Sprint 4), entirely client-side, no plaintext or search term ever sent to the
+  backend. Complete, see below.
+- **Sprint 6-7 (planned)** — attachments, UI polish. Not yet scoped in detail; each
+  should get its own CLAUDE.md decisions section if anything is ambiguous, same as
   Android's sprints did.
 - **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
 
@@ -1409,3 +1412,86 @@ everything here is client-side.
   way `git status` is -- used directly, consistent with every prior sprint's disclosed
   fallback pattern (docker exec *is* nominally in rtk's rewrite set, but was invoked via
   a one-off read-only `SELECT` spot-check, not a workflow rtk specifically optimizes).
+
+### Web Sprint 5 (Search) — complete
+
+Mirrors Android Sprint 4's search scope exactly (SPEC-BASE.md Section 16 / Phase 4), adapted
+to Web's existing Home view rather than a copy-pasted screen. **No backend changes** --
+everything here is client-side, and the acceptance bar was verified for real, not assumed:
+search never sends the query string or any vault plaintext to the backend.
+
+- **`web/src/services/vaultSearch.ts`** (`matchesQuery`/`filterItems`) -- a pure, synchronous
+  in-memory filter over already-decrypted `DecryptedVaultItem[]` (title, every content
+  block's `label`, every content block's `value` -- case-insensitive substring match),
+  field-for-field the same shape as Android's `data/VaultSearch.kt`. Secret blocks' label
+  and value are included in matching (same reasoning as Android: the item is already
+  decrypted in memory regardless, and a match never displays the secret's value anywhere --
+  it still renders hidden-by-default). **Tags are skipped**, confirmed by checking
+  `VaultItemPayload`/`ContentBlock` (`web/src/types/vault.ts`) and the backend schema first
+  rather than assumed -- there is no tag concept anywhere in this repo, matching Android
+  Sprint 4's own documented no-op.
+- **Data source decision, matching CLAUDE.md Resolved Design Decision #4's "in-memory only
+  for the unlocked session" option (the option Android Sprint 4 already took) with zero
+  Web-specific deviation**: `web/src/views/DashboardView.vue` already called
+  `vault.fetchItems()` with no `categoryId` on mount (Sprint 3), which fetches and
+  client-side-decrypts **every** vault item across all categories into `vault.items` (Pinia
+  store, memory-only, cleared on lock/logout) for its own "Recent items" list. Search reuses
+  that exact same array -- no new fetch, no new decrypt, no persistent cache anywhere
+  (localStorage/IndexedDB never touched by search). This was confirmed by reading
+  `DashboardView.vue`/`stores/vault.ts` before writing any search code, not assumed.
+- **UI**: a single search input added directly to `DashboardView.vue` (Home), not a
+  separate route/view -- mirrors Android Sprint 4's own choice to put search on Home rather
+  than a dedicated screen, and avoids adding a second view that would just re-fetch the same
+  data (SPEC-BASE.md Section 56 Rule 1, no overbuilding). While the query is non-blank, the
+  Categories/"New category" form and "Recent items" sections are swapped for a single
+  "Search results" list (`searchResults` computed, filtering `vault.items` via
+  `filterItems`); clearing the query restores the normal dashboard. No debounce was added --
+  filtering a client's realistic vault-item count in memory is effectively instant, and a
+  debounce would only be solving a problem that doesn't exist here (confirmed by the
+  network-call-count assertion below never ticking regardless of typing speed).
+- **Vitest: 102 tests passing** (up from 93 in Sprint 4) -- new `vaultSearch.test.ts`
+  covers: case-insensitive title match, content-block label match, content-block value
+  match (covers both "note" and generic "text" types), secret-block label/value match, a
+  null `label` not throwing, blank/whitespace query matching everything, a query that only
+  matches across a title+value boundary correctly *not* matching, and `filterItems`
+  returning the unfiltered array for a blank query vs. the correct subset otherwise.
+  `npm run lint` / `format:check` / `vue-tsc -b` / `npm run build` all clean.
+- **End-to-end verification, performed for real against the live backend**
+  (`npm run dev` on the default port 5173, required for the backend's
+  `CORS_ALLOWED_ORIGINS` allowlist -- same setup as every prior Web sprint; `web/.env`
+  pointed at `https://veilkeeper.quezacolt.my.id/`, deleted afterward) + a real headless
+  Chromium session via Playwright (installed temporarily via `npm install --no-save
+  playwright`, uninstalled afterward, same pattern as every prior sprint). All 8 scripted
+  checks passed:
+  1. Registered a fresh test account, logged in, landed on `/dashboard`.
+  2. Created one category ("Finance") and three vault items with deliberately distinct,
+     non-overlapping searchable content: "Home Router Admin" (title match target), a
+     `secret`-type block labelled "Recovery Code" on "Personal Email" (label match target,
+     including the secret-block-label case), and a `note`-type block containing "fridge
+     whiteboard" on "Wifi Network" (content-value match target).
+  3. Typed `router` -- confirmed the results list showed **only** "Home Router Admin".
+  4. Typed `recovery code` -- confirmed **only** "Personal Email" matched (proves secret
+     labels are searchable without displaying the secret value anywhere on screen).
+  5. Typed `fridge` -- confirmed **only** "Wifi Network" matched (proves note/text content
+     values are searchable, not just titles/labels).
+  6. Typed a non-matching query -- confirmed the "No matching items." empty state renders.
+  7. Cleared the query -- confirmed the Categories section reappeared (proves search
+     doesn't permanently replace the normal dashboard view).
+  8. **The acceptance-critical check**: every request to `veilkeeper.quezacolt.my.id` was
+     logged via Playwright's `page.on('request', ...)`. The call count was snapshotted
+     immediately before the first search keystroke (18 calls, from
+     register/login/category-create/3×item-create/navigation) and again after all five
+     search interactions above (typing 4 different queries plus clearing the field): still
+     **18 calls, unchanged**. This directly proves no network request -- to fetch, to log,
+     or otherwise -- was triggered by typing a search query, which is the actual acceptance
+     bar (not just "results look right").
+  - **This creates one permanent (harmless) test account/category/3 items in the live
+    production database** (`sprint5-*@example.com`), same accepted pattern as every prior
+    Web sprint's own live-backend verification.
+- No Web CI workflow added this sprint either (still optional per the roadmap intro's CI
+  policy).
+- **Tooling note**: `rtk` (v0.43.0) confirmed working at the start of this sprint (`rtk
+  --version`, `rtk git log`). The bulk of this sprint's shell work was `npm test`/`npm run
+  lint`/`npm run format:check`/`npm run build`/`node <playwright script>`, none of which are
+  part of rtk's git/gh/docker-focused rewrite set -- used directly, same disclosed fallback
+  pattern as every prior Web sprint.

@@ -3,12 +3,22 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useVaultStore } from '../stores/vault'
+import { filterItems } from '../services/vaultSearch'
 
 /**
  * Home view (Web Sprint 3) -- mirrors Android's Home screen scope
  * (categories + item counts + recent items). Kept as the `/dashboard` route
  * from Sprint 2 rather than adding a separate route, since this IS the
  * authenticated landing page, just with real content now.
+ *
+ * Web Sprint 5 adds a global search bar here rather than a separate search
+ * view -- mirrors Android Sprint 4's own choice to put search directly on
+ * Home (`ui/home/HomeScreen.kt`/`HomeViewModel`) instead of a dedicated
+ * screen, and this view already fetches every vault item via
+ * `vault.fetchItems()` below (no categoryId = all items across all
+ * categories), so search has nothing new to fetch -- it's a pure in-memory
+ * filter over `vault.items`, which is already the full decrypted list this
+ * view was fetching anyway.
  */
 const auth = useAuthStore()
 const vault = useVaultStore()
@@ -17,6 +27,12 @@ const router = useRouter()
 const loading = ref(true)
 const newCategoryName = ref('')
 const creatingCategory = ref(false)
+const searchQuery = ref('')
+
+const isSearching = computed(() => searchQuery.value.trim().length > 0)
+
+/** Pure client-side filter (see `services/vaultSearch.ts`) -- never triggers a fetch or network call. */
+const searchResults = computed(() => filterItems(vault.items, searchQuery.value))
 
 const recentItems = computed(() =>
   [...vault.items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5),
@@ -78,42 +94,67 @@ async function onLogout(): Promise<void> {
 
     <p v-if="vault.errorMessage" class="banner banner-error" role="alert">{{ vault.errorMessage }}</p>
 
-    <section class="section">
-      <div class="section-header">
-        <h2>Categories</h2>
-        <RouterLink to="/items/new" class="button-link">+ New item</RouterLink>
-      </div>
+    <div class="search-bar">
+      <input
+        v-model="searchQuery"
+        type="search"
+        placeholder="Search title, labels, notes…"
+        aria-label="Search vault items"
+      />
+    </div>
 
-      <form class="new-category-form" @submit.prevent="onCreateCategory">
-        <input v-model="newCategoryName" type="text" placeholder="New category name" maxlength="100" />
-        <button type="submit" :disabled="creatingCategory || !newCategoryName.trim()">Add</button>
-      </form>
-
-      <p v-if="loading">Loading…</p>
-      <ul v-else class="category-list">
-        <li v-for="category in vault.categories" :key="category.id">
-          <RouterLink :to="`/categories/${category.id}`" class="category-card">
-            <span class="category-name">{{ category.name }}</span>
-            <span class="category-count">{{ category.item_count }} item(s)</span>
-          </RouterLink>
-        </li>
-        <li v-if="!vault.categories.length" class="empty">No categories yet.</li>
-      </ul>
-    </section>
-
-    <section class="section">
-      <h2>Recent items</h2>
+    <section v-if="isSearching" class="section">
+      <h2>Search results</h2>
       <p v-if="loading">Loading…</p>
       <ul v-else class="item-list">
-        <li v-for="item in recentItems" :key="item.id">
+        <li v-for="item in searchResults" :key="item.id">
           <RouterLink :to="`/items/${item.id}`" class="item-row">
             <span class="item-title">{{ item.payload.title }}</span>
             <span class="item-category">{{ categoryName(item.categoryId) }}</span>
           </RouterLink>
         </li>
-        <li v-if="!recentItems.length" class="empty">No vault items yet.</li>
+        <li v-if="!searchResults.length" class="empty">No matching items.</li>
       </ul>
     </section>
+
+    <template v-else>
+      <section class="section">
+        <div class="section-header">
+          <h2>Categories</h2>
+          <RouterLink to="/items/new" class="button-link">+ New item</RouterLink>
+        </div>
+
+        <form class="new-category-form" @submit.prevent="onCreateCategory">
+          <input v-model="newCategoryName" type="text" placeholder="New category name" maxlength="100" />
+          <button type="submit" :disabled="creatingCategory || !newCategoryName.trim()">Add</button>
+        </form>
+
+        <p v-if="loading">Loading…</p>
+        <ul v-else class="category-list">
+          <li v-for="category in vault.categories" :key="category.id">
+            <RouterLink :to="`/categories/${category.id}`" class="category-card">
+              <span class="category-name">{{ category.name }}</span>
+              <span class="category-count">{{ category.item_count }} item(s)</span>
+            </RouterLink>
+          </li>
+          <li v-if="!vault.categories.length" class="empty">No categories yet.</li>
+        </ul>
+      </section>
+
+      <section class="section">
+        <h2>Recent items</h2>
+        <p v-if="loading">Loading…</p>
+        <ul v-else class="item-list">
+          <li v-for="item in recentItems" :key="item.id">
+            <RouterLink :to="`/items/${item.id}`" class="item-row">
+              <span class="item-title">{{ item.payload.title }}</span>
+              <span class="item-category">{{ categoryName(item.categoryId) }}</span>
+            </RouterLink>
+          </li>
+          <li v-if="!recentItems.length" class="empty">No vault items yet.</li>
+        </ul>
+      </section>
+    </template>
   </main>
 </template>
 
@@ -155,6 +196,19 @@ h1 {
   border-radius: 0.5rem;
   background: white;
   cursor: pointer;
+}
+
+.search-bar {
+  margin-top: 1.25rem;
+}
+
+.search-bar input {
+  width: 100%;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid #d0d5dd;
+  border-radius: 0.5rem;
+  font-size: 0.95rem;
+  box-sizing: border-box;
 }
 
 .section {
