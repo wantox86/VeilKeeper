@@ -7,10 +7,11 @@ decisions, and the Web sprint roadmap.
 **Status: all 8 Web sprints delivered** (scaffold+crypto, auth, vault CRUD,
 secure UX, search, attachments, UI polish, and homelab deployment). See
 root [`CLAUDE.md`](../CLAUDE.md#web-client-sprint-roadmap-separate-from-the-8-android-sprints-above)
-for the full sprint-by-sprint history. **Sprint 8 (deployment) has a
-disclosed, unresolved blocker for real multi-device LAN use** -- read
-"Deployment (Sprint 8)" below before assuming `http://<LAN-IP>:18092` works
-from a phone or another computer, because as shipped it does not.
+for the full sprint-by-sprint history. Sprint 8 (deployment)'s disclosed
+multi-device-LAN blocker is now **resolved** via a self-signed TLS
+certificate -- read "Deployment (Sprint 8)" below for how to generate the
+cert and what each device needs to do once (`https://<LAN-IP>:18092`, plus
+a one-time manual trust of the certificate warning).
 
 ## Requirements
 
@@ -301,52 +302,89 @@ light resource limits (0.5 CPU / 64M, measured actual idle usage ~12MiB).
 **LAN-only by explicit policy** -- this service must never be added to
 `~/.cloudflared/config.yml` or otherwise exposed publicly (unlike the
 Android app and backend, which are deliberately public); it is reachable
-only as `http://<MACMINI-LAN-IP>:18092` from devices on the same local
-network. See root `README.md` for the equivalent user-facing summary.
+only as `https://<MACMINI-LAN-IP>:18092` (HTTPS, see below) from devices on
+the same local network. See root `README.md` for the equivalent
+user-facing summary.
 
-### Disclosed blocker: LAN access over plain HTTP breaks all crypto for non-host devices
+### HTTPS via self-signed certificate (resolves the former secure-context blocker)
 
-**Confirmed with a real headless browser (Playwright/Chromium) against the
-actual deployed container** (`http://192.168.50.131:18092`, not `npm run
-dev`): the Web Crypto API (`crypto.subtle`, used throughout
-`src/crypto/hkdf.ts` and `src/crypto/aesGcm.ts`) is only available in a
-[secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+The Web Crypto API (`crypto.subtle`, used throughout `src/crypto/hkdf.ts`
+and `src/crypto/aesGcm.ts` -- every key-derivation and encrypt/decrypt step
+this whole app depends on) is only available in a browser [secure
+context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
 -- `https:`, or an origin the spec special-cases as "potentially
 trustworthy" (`localhost`, `127.0.0.1`, `[::1]`). A plain private-network IP
 like `192.168.50.131` served over plain `http://` is **not** a secure
-context in any current browser. Verified directly:
+context in any current browser, which used to mean register/login/vault
+CRUD only worked when the app was opened from the MACMINI itself.
 
-```js
-// via Playwright, page.goto('http://192.168.50.131:18092/register')
-await page.evaluate(() => window.isSecureContext) // -> false
-await page.evaluate(() => typeof window.crypto.subtle) // -> "undefined"
+**Fix**: `web`'s nginx (`web/web.nginx.conf`) now terminates HTTPS directly
+on the same internal port (8080, still mapped to host 18092 -- no second
+port, no plain-HTTP fallback to redirect from, so there was nothing to gain
+from a dual-mode setup) using a self-signed certificate with a `subjectAltName`
+matching the host's LAN IP (required -- modern browsers reject a cert whose
+only identity is a bare CN with no matching SAN).
+
+**Generate the cert before first bringing the service up** (and again any
+time it needs regenerating/rotating -- e.g. the LAN IP changes, or the
+10-year validity eventually lapses):
+
+```bash
+web/nginx/certs/generate-cert.sh                # defaults to 192.168.50.131
+# or, for a different homelab LAN IP:
+web/nginx/certs/generate-cert.sh 192.168.1.50
+docker compose up -d --build web
 ```
 
-The practical effect: the Register page's connectivity/liveness bits work
-fine (plain `fetch`, no crypto involved), but clicking "Create account"
-throws `Cannot read properties of undefined (reading 'importKey')` and
-registration never completes -- and the same would happen for Login and any
-vault item encrypt/decrypt, since they all go through the same
-`crypto.subtle` calls. **This means the deployed Web app is currently
-unusable for its stated purpose (register/login/vault CRUD) from any
-device other than the MACMINI itself** (where `http://localhost:18092`
-*is* a secure context and everything works -- confirmed separately: same
-Playwright check on `localhost:18092` returns `isSecureContext: true` and
-a working `crypto.subtle` object). Accessing via `http://127.0.0.1:18092`
-from the MACMINI's own browser would work the same way; accessing via the
-MACMINI's LAN IP from a phone or another computer would not.
+The script (`openssl req -x509 -newkey rsa:2048 ... -addext
+"subjectAltName=IP:<your-ip>"`, 3650-day validity) writes `cert.pem` and
+`key.pem` into `web/nginx/certs/` -- **gitignored, never committed** (see
+repo root `.gitignore`), mounted read-only into the container via
+`docker-compose.yml`'s `web.volumes` (mounted rather than baked into the
+image, so regenerating/rotating the cert never requires a rebuild, only
+`docker compose up -d web`). A 10-year validity was chosen deliberately:
+since every device has to manually trust this cert once anyway, a
+short-lived cert with a renewal/re-trust story would add real recurring
+friction for no real security benefit in a homelab, single-operator
+context.
 
-This is a browser-platform constraint, not a bug in this repo's code, and
-not something the CORS fix or any application-level change can work around
--- fixing it means terminating TLS somewhere in front of `web` (e.g. a
-self-signed certificate baked into `web.nginx.conf` itself, no separate
-reverse-proxy service needed), which every device visiting the LAN URL
-would then need to manually trust (a certificate-warning click-through, or
-importing the cert, on every browser/device) since there's no real DNS
-name a public CA could issue for a private IP. That's a real UX/security
-trade-off decision (self-signed cert distribution/trust, plus a rotation
-story), not a small tweak -- **deliberately left unresolved and reported
-here rather than decided unilaterally**, per this project's "stop and ask
-on ambiguous decisions" principle. Until it's resolved, treat this
-deployment as verified-working-from-the-host-only; do not tell end users
-it works from their phone.
+**Trusting the certificate (once per device)**, the first time you open
+`https://<MACMINI-LAN-IP>:18092` (e.g. `https://192.168.50.131:18092`) from
+a browser that hasn't seen this cert before, you'll get a warning -- this
+is expected, not a sign of a misconfiguration:
+
+- **Chrome / Edge**: click "Advanced" -> "Proceed to `192.168.50.131`
+  (unsafe)".
+- **Firefox**: click "Advanced..." -> "Accept the Risk and Continue".
+- **Safari (macOS/iOS)**: click "Show Details" -> "visit this website" (may
+  need to confirm again in a system dialog on iOS) -- or, for a persistent
+  trust that survives across sessions/apps, install the cert's public half
+  (`cert.pem`) into the device's Keychain/System trust store and mark it
+  "Always Trust" for SSL.
+
+Only `cert.pem` (the public certificate) is ever needed on a client device
+for manual installation -- never share or transfer `key.pem`.
+
+**Verified with a real headless browser (Playwright/Chromium,
+`ignoreHTTPSErrors: true` -- the closest simulation of "a device that has
+already manually trusted the cert") against the actual deployed container**
+at `https://192.168.50.131:18092`:
+
+```js
+await page.evaluate(() => window.isSecureContext)      // -> true  (was false)
+await page.evaluate(() => typeof window.crypto.subtle) // -> "object" (was "undefined")
+```
+
+A full register -> login -> create category -> create vault item flow was
+run end-to-end against this HTTPS LAN origin and completed successfully
+with **zero console errors** -- proving this isn't just "the padlock shows
+up," but that the actual blocker (crypto.subtle being unavailable) is
+resolved and the app's core purpose works from a non-host device's
+perspective (the LAN origin, not `localhost`).
+
+This is a browser-platform constraint that required a real infrastructure
+decision (self-signed cert distribution/trust, no rotation automation) --
+consistent with how this project's Sprint 1 CORS blocker was resolved once
+a decision was made, this was previously left unresolved and reported
+rather than decided unilaterally; it's been implemented now per an explicit
+decision to accept the self-signed-cert/manual-trust trade-off.

@@ -838,15 +838,20 @@ than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
 below for its own tracking. **All 8 Web sprints are now complete** as of the most recent commit
-touching `web/`, including Sprint 8 (homelab deployment) -- though Sprint 8 has one disclosed,
-unresolved blocker (browser secure-context requirements break vault crypto when the deployed
-Web app is accessed from any device other than the host itself; see the Web Sprint 8 entry
-below). Android/backend are unaffected by Web sprints themselves, though the backend did get two
-small, carefully-verified CORS middleware/config changes: one just before Web Sprint 2 (see
+touching `web/`, including Sprint 8 (homelab deployment). Sprint 8's one disclosed blocker
+(browser secure-context requirements broke vault crypto when the deployed Web app was accessed
+from any device other than the host itself) is **now resolved** via a self-signed TLS
+certificate for `web`'s nginx -- see the Web Sprint 8 entry and its "HTTPS follow-up" note
+below for the full writeup, including Playwright verification of the previously-broken
+register/login/vault-CRUD flow now working over `https://<LAN-IP>:18092`. Android/backend are
+unaffected by Web sprints themselves, though the backend did get three small,
+carefully-verified CORS middleware/config changes: one just before Web Sprint 2 (see
 "Backend CORS fix" above, adding CORS middleware itself) since Web Sprint 2 needed working
-cross-origin requests to function at all, and one during Web Sprint 8 (adding the LAN deployment
-origin to the existing allowlist). Web Sprints 4, 5, and 6 all needed **no** backend changes at
-all -- Sprint 6's attachment endpoints already existed from Android Sprint 5.
+cross-origin requests to function at all, one during Web Sprint 8 (adding the LAN deployment
+origin to the existing allowlist), and one in the Sprint 8 HTTPS follow-up (switching that same
+LAN origin from `http://` to `https://` once TLS was added in front of `web`). Web Sprints 4, 5,
+and 6 all needed **no** backend changes at all -- Sprint 6's attachment endpoints already existed
+from Android Sprint 5.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -878,9 +883,8 @@ Planned roadmap (subject to revision as sprints land):
   backend. Complete, see below.
 - **Sprint 6** — attachments (mirrors Android Sprint 5). Complete, see below.
 - **Sprint 7** — UI polish (mirrors Android Sprint 6). Complete, see below.
-- **Sprint 8** — internal/LAN-only deployment (see policy note above). Infrastructure complete
-  (Docker service, CORS, resource/restart verification), but with one disclosed blocker left
-  unresolved -- see below.
+- **Sprint 8** — internal/LAN-only deployment (see policy note above). Complete, including its
+  own follow-up HTTPS fix for the secure-context blocker it originally surfaced -- see below.
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
 
@@ -1781,7 +1785,7 @@ and one new layout shell.
   `git status`/`git log` are -- used directly, consistent with every prior Web sprint's disclosed
   fallback pattern.
 
-### Web Sprint 8 (Homelab deployment) — infrastructure complete, one disclosed blocker left open
+### Web Sprint 8 (Homelab deployment) — complete, secure-context blocker resolved (see HTTPS follow-up below)
 
 The final planned Web sprint. Builds and deploys `web/` as a Docker service alongside `api`/
 `mysql` in this repo's single `docker-compose.yml`, per the LAN-only policy stated at the top of
@@ -1874,3 +1878,94 @@ see below, reported rather than silently worked around.**
   sprint; `docker`/`docker compose` commands were run through `rtk docker ...` per this repo's
   tooling convention, `curl`/`node <playwright script>` used directly for verification (not part
   of rtk's rewrite set), consistent with every prior sprint's disclosed pattern.
+
+#### HTTPS follow-up (resolves the secure-context blocker above) — self-signed cert, same port
+
+**Decision made explicitly by the user**, not decided unilaterally: fix the secure-context
+blocker with a **self-signed TLS certificate** terminated directly in `web`'s nginx, accepting
+the disclosed trade-off that every device on the LAN must manually trust the certificate once
+(browser warning first, click-through/import to accept -- see `web/README.md`'s per-browser
+instructions). This mirrors how the Sprint 1 CORS blocker and this Sprint 8 blocker were both
+reported-not-silently-worked-around when the decision was genuinely ambiguous; here the decision
+was made, so it was implemented, verified, and documented rather than left open again.
+
+- **Cert generation** (`web/nginx/certs/generate-cert.sh`): plain `openssl req -x509 -newkey
+  rsa:2048 ... -addext "subjectAltName=IP:192.168.50.131"`, `-nodes`, 3650-day (~10 year)
+  validity. **SAN is required, not optional** -- a cert with only a CN and no matching SAN is
+  rejected outright by modern browsers for IP-address hosts. 10-year validity was a deliberate
+  choice: since manual trust already happens once per device regardless of cert lifetime, a
+  short-lived cert would only add a recurring re-trust chore with no real security upside in a
+  single-operator homelab. Output (`cert.pem`/`key.pem`) is gitignored
+  (`web/nginx/certs/*.pem`, repo root `.gitignore`) -- **never committed**, generated locally
+  before `docker compose up -d --build web` and re-run any time the cert needs
+  regenerating/rotating.
+- **No internal CA / mkcert / reverse-proxy service added** -- deliberately kept to the simplest
+  option that resolves the actual blocker (SPEC-BASE.md Section 60 / this project's
+  no-overengineering principle). A dedicated CA or mkcert-style tooling would only matter if
+  many certs needed issuing or automated device provisioning existed; neither applies to a
+  single homelab LAN IP with manual per-device trust already accepted.
+- **Port decision: same host port (18092), not a new one.** `web/web.nginx.conf`'s `server`
+  block now `listen`s `8080 ssl` (same internal port as before, still mapped to host 18092 in
+  `docker-compose.yml` -- unchanged) with `ssl_certificate`/`ssl_certificate_key` pointed at
+  `/etc/nginx/certs/{cert,key}.pem`, plus `http2 on`. **No plain-HTTP listener was kept
+  alongside it** -- a bare HTTP request to the same port now gets nginx's own "The plain HTTP
+  request was sent to an HTTPS port" `400`, confirmed via `curl`. A second host port (e.g.
+  18093) with an HTTP->HTTPS redirect was considered and rejected: there is no other consumer of
+  plain HTTP on this service to redirect *from* (nothing bookmarked the old `http://` URL in a
+  way that matters more than updating docs), so a second listener would only be unused
+  complexity per the same no-overengineering principle above.
+- **Cert delivery: bind-mounted volume, not baked into the image.** `docker-compose.yml`'s `web`
+  service gained `volumes: - ./web/nginx/certs:/etc/nginx/certs:ro`. Chosen over baking the cert
+  into the Dockerfile at build time because mounting means regenerating/rotating the cert (e.g.
+  IP change, or eventually the 10-year expiry) only needs `docker compose up -d web`, never a
+  full image rebuild -- simpler to reproduce from a fresh clone too (`generate-cert.sh` then
+  `docker compose up -d --build web`, documented in both `README.md` and `web/README.md`).
+- **Backend CORS updated again** (`CORS_ALLOWED_ORIGINS` in the production `.env`, third time
+  this pattern's been used, same as the pre-Sprint-2 and Sprint 8 CORS changes above): the LAN
+  origin changed from `http://192.168.50.131:18092` to `https://192.168.50.131:18092` (protocol
+  only -- the IP and port are unchanged). No other secret (`SERVER_PEPPER`/`DB_PASSWORD`/
+  `DB_ROOT_PASSWORD`) touched or regenerated. Applied via `docker compose up -d --build api`
+  (same documented Compose behavior as both earlier CORS changes: since `.env` itself changed,
+  Compose recreated `veilkeeper-mysql` too, not just `api` -- harmless, the named volume
+  survives a recreate). **Verified against the live backend, not assumed**: `/health`/`/ready`
+  both responded normally within seconds after the restart; `docker ps` confirmed both
+  containers came back healthy; a preflight `OPTIONS` with
+  `Origin: https://192.168.50.131:18092` now returns the CORS headers (`Access-Control-Allow-
+  Origin` echoing that exact origin), while a preflight with the *old* `Origin:
+  http://192.168.50.131:18092` (no longer allowlisted) gets none -- confirming the swap, not an
+  addition alongside the old origin.
+- **`.env.example` updated to match** (`CORS_ALLOWED_ORIGINS` default now uses `https://` for
+  the LAN deployment origin, with an updated comment explaining why), so a fresh clone's example
+  config reflects the real deployment shape.
+- **`VITE_API_BASE_URL` unchanged** -- it already pointed at the live public backend
+  (`https://veilkeeper.quezacolt.my.id/`), which itself was never `http://`; only the Web app's
+  *own* origin (what the browser sees `web` as) changed protocol, not the backend URL baked into
+  the bundle.
+- **Verified with a real headless browser (Playwright/Chromium, `ignoreHTTPSErrors: true` --
+  simulating a device that already manually trusts the cert) against the actual deployed
+  container**, not `npm run dev`:
+  - `https://192.168.50.131:18092/`: `window.isSecureContext` is now `true` (was `false`) and
+    `typeof window.crypto.subtle` is now `"object"` (was `"undefined"`) -- the exact check that
+    proved the original blocker, now proving it's resolved.
+  - **Full flow end-to-end over this HTTPS LAN origin**: register (new account) -> redirected to
+    login -> login -> dashboard -> create a category -> create a vault item (with an encrypted
+    text block) -> item saved and its detail page loaded (`/items/<id>`) -- all succeeded with
+    **zero browser console errors** at any step. This is the same flow Sprint 8's own
+    verification explicitly could **not** complete via the LAN IP because of the blocker; it now
+    completes identically to the `localhost`-only path that always worked.
+  - A plain `curl https://localhost:18092/` and `curl https://192.168.50.131:18092/` (both `-k`,
+    self-signed) both return `200`; `curl http://localhost:18092/` (no TLS) gets nginx's `400`
+    "plain HTTP request sent to HTTPS port" response, confirming there's no accidental dual-mode
+    listener left active.
+- **`docker ps`/collision check re-run**: `veilkeeper-web`, `veilkeeper-api`, `veilkeeper-mysql`
+  all healthy after the rebuild/restart; same host ports as before (18092/18091, mysql still
+  unpublished); zero collision with the Qoder `vk-sprint3-*` stack or any other container on the
+  host.
+- **`~/.cloudflared/config.yml` re-confirmed untouched** (diffed/grepped for `18092` and
+  `veilkeeper-web` -- no matches) -- this HTTPS change is entirely internal to the LAN-only
+  `web` service and its own container; it does not add, and must never add, a path from the
+  public internet to it. The tunnel continues to expose only `veilkeeper.quezacolt.my.id` (the
+  `api` service) for this repo, exactly as before.
+- Both `README.md` and `web/README.md` updated to describe the resolved state (HTTPS URL,
+  cert-generation step, per-browser manual-trust instructions for Chrome/Edge, Firefox, and
+  Safari) -- no longer document this as an open blocker.

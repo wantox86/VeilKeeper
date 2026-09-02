@@ -11,10 +11,10 @@ manager). Client-side (zero-knowledge) encrypted vault items, Go backend, MySQL,
 **Status:** All 8 planned Android sprints (0-7) complete — full auth + vault CRUD + categories +
 attachments + secure UX (auto-lock/biometric/clipboard/screenshot protection) + search + UI
 polish + homelab deployment hardening. A separate 8-sprint Web client (`web/`, Vue 3) is also
-fully built and deployed (see "Web app" below) — its final deployment sprint surfaced one
-disclosed, unresolved blocker (LAN access needs HTTPS for the app's crypto to work from any
-device other than the host itself). See [`CLAUDE.md`](./CLAUDE.md#current-state) for the
-full history and final project summary.
+fully built and deployed (see "Web app" below) — its final deployment sprint's disclosed
+blocker (LAN access needed HTTPS for the app's crypto to work from any device other than the
+host itself) is now **resolved** via a self-signed TLS certificate. See
+[`CLAUDE.md`](./CLAUDE.md#current-state) for the full history and final project summary.
 
 ## Repository structure
 
@@ -157,25 +157,33 @@ Docker image (`web/Dockerfile`) and run as the `web` service in this same
 LAN-only** -- unlike the Android app and backend above, it is never
 registered with this host's `cloudflared` tunnel or exposed publicly.
 
+**HTTPS, self-signed cert.** Browsers only expose the Web Crypto API
+(`crypto.subtle`, which this app's whole encryption path depends on) in a
+*secure context* (`https:`, or `localhost`/`127.0.0.1`) -- a plain-HTTP LAN
+IP does not qualify, which used to mean register/login/vault CRUD only
+worked from the MACMINI itself. This is now resolved: `web`'s nginx
+terminates TLS with a self-signed certificate (SAN = this host's LAN IP),
+generated locally (never committed -- see `.gitignore`) and mounted into
+the container. **Generate the cert before first bringing the service up**
+(and again any time you regenerate/rotate it):
+
 ```bash
+web/nginx/certs/generate-cert.sh          # defaults to 192.168.50.131
+# or: web/nginx/certs/generate-cert.sh <your-LAN-IP>
 docker compose up -d --build web
-curl http://localhost:18092/   # served by nginx, host port 18092
+curl -k https://localhost:18092/          # served by nginx, host port 18092, HTTPS only
 ```
 
-Nominally reachable from any device on the same local network at
-`http://<MACMINI-LAN-IP>:18092` (e.g. `http://192.168.50.131:18092`) --
-**but read `web/README.md`'s "Deployment (Sprint 8)" section before relying
-on that**: browsers only expose the Web Crypto API (`crypto.subtle`, which
-this app's whole encryption path depends on) in a *secure context*
-(`https:`, or `localhost`/`127.0.0.1`), and a plain-HTTP LAN IP does not
-qualify. As verified with a real headless browser against this exact
-deployed container, that means **register/login/vault CRUD currently only
-work when accessed from the MACMINI itself** (`http://localhost:18092`);
-accessing the same URL from a phone or another computer on the LAN loads
-the page but every crypto operation throws and the app is unusable there.
-This is a disclosed, unresolved blocker (needs a TLS decision), not
-something silently worked around -- see `web/README.md` for the full
-writeup and options.
+Reachable from any device on the same local network at
+`https://<MACMINI-LAN-IP>:18092` (e.g. `https://192.168.50.131:18092`).
+Because the certificate is self-signed (no public CA can issue one for a
+private LAN IP), **every device must manually trust it once** -- the
+browser will show a warning first. See `web/README.md`'s "Deployment
+(Sprint 8)" section for step-by-step accept instructions per browser
+(Chrome, Safari, Firefox), and for the full verification writeup (Playwright
+confirmed `window.isSecureContext === true` and a full
+register/login/create-category/create-item flow succeeding over this HTTPS
+LAN origin with zero console errors).
 
 ## Android app
 

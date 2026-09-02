@@ -21,3 +21,8 @@ android/.cxx/
 
 # OS
 .DS_Store
+
+# Self-signed TLS cert/key for web's LAN HTTPS deployment (Web Sprint 8
+# follow-up) -- generated locally via web/nginx/certs/generate-cert.sh,
+# never committed. See CLAUDE.md "Web Sprint 8" for why this exists.
+web/nginx/certs/*.pem
