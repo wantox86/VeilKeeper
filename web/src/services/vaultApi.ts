@@ -1,5 +1,5 @@
 import { apiFetch, parseJsonOrThrow } from './api'
-import type { CategoryDto, VaultItemDto } from '../types/vault'
+import type { AttachmentDataDto, AttachmentDto, CategoryDto, VaultItemDto } from '../types/vault'
 
 /**
  * Thin HTTP wrappers over `/api/v1/categories` and `/api/v1/vault/items` --
@@ -108,6 +108,58 @@ export async function updateVaultItem(
 
 export async function deleteVaultItem(sessionToken: string, id: number): Promise<void> {
   const response = await apiFetch(`api/v1/vault/items/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders(sessionToken),
+  })
+  if (!response.ok) {
+    await parseJsonOrThrow(response)
+  }
+}
+
+// --- attachments (Web Sprint 6) ---------------------------------------------
+//
+// `POST/GET/DELETE /api/v1/vault/items/{id}/attachments[/{attachmentId}]`
+// already existed before this sprint (built for Android Sprint 5) -- no
+// backend changes needed. The server treats `encrypted_filename`/
+// `encrypted_data` exactly like `encrypted_payload` above: opaque
+// client-produced ciphertext it never decodes, only moves as base64 JSON.
+
+export async function uploadAttachment(
+  sessionToken: string,
+  itemId: number,
+  encryptedFilenameBase64: string,
+  mimeType: string,
+  encryptedDataBase64: string,
+): Promise<AttachmentDto> {
+  const response = await apiFetch(`api/v1/vault/items/${itemId}/attachments`, {
+    method: 'POST',
+    headers: jsonAuthHeaders(sessionToken),
+    body: JSON.stringify({
+      encrypted_filename: encryptedFilenameBase64,
+      mime_type: mimeType,
+      encrypted_data: encryptedDataBase64,
+    }),
+  })
+  return parseJsonOrThrow<AttachmentDto>(response)
+}
+
+export async function getAttachment(
+  sessionToken: string,
+  itemId: number,
+  attachmentId: number,
+): Promise<AttachmentDataDto> {
+  const response = await apiFetch(`api/v1/vault/items/${itemId}/attachments/${attachmentId}`, {
+    headers: authHeaders(sessionToken),
+  })
+  return parseJsonOrThrow<AttachmentDataDto>(response)
+}
+
+export async function deleteAttachment(
+  sessionToken: string,
+  itemId: number,
+  attachmentId: number,
+): Promise<void> {
+  const response = await apiFetch(`api/v1/vault/items/${itemId}/attachments/${attachmentId}`, {
     method: 'DELETE',
     headers: authHeaders(sessionToken),
   })

@@ -837,11 +837,12 @@ unverified work across the whole project, called out consistently sprint over sp
 than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
-below for its own tracking. Web Sprint 5 (Search) is complete as of the most recent
+below for its own tracking. Web Sprint 6 (Attachments) is complete as of the most recent
 commit touching `web/`; Android/backend are unaffected by Web sprints themselves, though the
 backend did get a small, carefully-verified CORS middleware addition just before Web Sprint 2
 (see "Backend CORS fix" above) since Web Sprint 2 needed working cross-origin requests to
-function at all. Web Sprint 4 and Web Sprint 5 both needed **no** backend changes at all.
+function at all. Web Sprints 4, 5, and 6 all needed **no** backend changes at all -- Sprint 6's
+attachment endpoints already existed from Android Sprint 5.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -871,9 +872,9 @@ Planned roadmap (subject to revision as sprints land):
 - **Sprint 5 (this one)** — global search over the client-side-decrypted vault (mirrors
   Android Sprint 4), entirely client-side, no plaintext or search term ever sent to the
   backend. Complete, see below.
-- **Sprint 6-7 (planned)** — attachments, UI polish. Not yet scoped in detail; each
-  should get its own CLAUDE.md decisions section if anything is ambiguous, same as
-  Android's sprints did.
+- **Sprint 6** — attachments (mirrors Android Sprint 5). Complete, see below.
+- **Sprint 7 (planned)** — UI polish. Not yet scoped in detail; should get its own
+  CLAUDE.md decisions section if anything is ambiguous, same as Android's sprints did.
 - **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
@@ -1495,3 +1496,153 @@ search never sends the query string or any vault plaintext to the backend.
   lint`/`npm run format:check`/`npm run build`/`node <playwright script>`, none of which are
   part of rtk's git/gh/docker-focused rewrite set -- used directly, same disclosed fallback
   pattern as every prior Web sprint.
+
+### Web Sprint 6 (Attachments) — complete
+
+Mirrors Android Sprint 5's scope exactly (SPEC-BASE.md Phase 5, "Web Attachments" task). **No
+backend changes** -- `POST/GET/DELETE /api/v1/vault/items/{id}/attachments[/{attachmentId}]`
+already existed from Android Sprint 5, and the backend treats attachment bytes as opaque
+client-produced ciphertext regardless of which client uploaded them.
+
+- **Attachment-linking decision: zero Web-specific deviation from Android/the backend's
+  existing contract**, confirmed by reading `attachment_handlers.go`'s package doc comment and
+  `AttachmentCrypto.kt` before writing any code, not assumed: an "image" content block's
+  existing generic `value` field holds the attachment's server-assigned numeric ID as a decimal
+  string. `web/src/types/vault.ts`'s `ContentBlockType` gained `'image'` alongside
+  `'text' | 'secret' | 'note'`; no new field added to `ContentBlock`.
+- `web/src/crypto/attachmentCrypto.ts` (`encryptFile`/`decryptFile`/`encryptFilename`/
+  `decryptFilename`) mirrors Android's `AttachmentCrypto.kt` 1:1: a thin `aesGcm.ts` wrapper,
+  file bytes and filename encrypted as two independent AES-256-GCM operations (each own nonce).
+- **Compress-if-appropriate: implemented, not skipped** -- judged simple enough for this
+  sprint's scope given the Web platform's native `createImageBitmap`/`<canvas>` APIs (no WASM
+  dependency needed, unlike Argon2id). `web/src/services/imageCompressor.ts`'s `compressImage`
+  mirrors Android's `ImageCompressor.kt` field-for-field: downscale to ≤1600px longest side,
+  re-encode as JPEG quality 0.8, run *before* encryption (ciphertext doesn't compress). Falls
+  back to uploading the original bytes/mime-type if compression isn't possible in a given
+  browser (`compressImage` returns null on decode failure) -- never silently drops the pick.
+  **Not unit-testable under Vitest/jsdom** (jsdom implements neither `createImageBitmap` nor a
+  real `<canvas>` rasterizer) -- same disclosed-gap category as Android's own `ImageCompressor`
+  (not testable on the host JVM either, no Robolectric dependency there). Verified instead via
+  a real headless-Chromium script during this sprint's own manual testing (see below) and via
+  the end-to-end Playwright pass: a real 40×30 PNG (127 bytes) compressed to a 770-byte JPEG
+  before encryption, and the resulting attachment (`mime_type: "image/jpeg"`, `size: 798` =
+  12-byte nonce + 770-byte JPEG + 16-byte GCM tag) decrypted and rendered back at the exact
+  original 40×30 dimensions.
+  **A real bug caught during this verification, not hypothetical**: the first attempt used a
+  hand-typed base64 PNG literal for the test image, which `createImageBitmap` rejected with
+  `InvalidStateError: The source image could not be decoded` in real Chromium (despite `file`/
+  `sips` on macOS reading it fine) -- root cause was a malformed/non-spec-compliant hand-crafted
+  PNG, not a bug in `imageCompressor.ts`. Switched to a Pillow-generated PNG for all
+  verification after confirming decode success in isolation first.
+- `web/src/services/vaultApi.ts` gained `uploadAttachment`/`getAttachment`/`deleteAttachment`
+  (thin HTTP wrappers, same Api-is-dumb-HTTP split as every other endpoint in this file).
+  `web/src/types/vault.ts` gained `AttachmentDto`/`AttachmentDataDto` (field-for-field the
+  backend's `attachmentResponse`/`attachmentDataResponse` Go structs).
+- `web/src/stores/vault.ts` gained `uploadAttachment(itemId, data, mimeType, filename)` (encrypts
+  client-side, returns the new attachment id -- caller appends the resulting `{type: "image",
+  value: String(id)}` block and calls `updateItem`, mirroring Android's create-then-upload-then-
+  update-item flow), `downloadAttachment(itemId, attachmentId)` (returns a decrypted `Blob` +
+  filename + mime type), and `deleteAttachment(itemId, attachmentId)` (server-side delete only --
+  callers separately remove the content block and call `updateItem`).
+- **Add/Edit form** (`web/src/views/VaultItemFormView.vue`), **the same "already-existing-item-
+  required" constraint Android Sprint 5 documented** (the endpoint is
+  `/vault/items/{id}/attachments`): new items hold picked images in memory as `pendingImages`
+  (local `URL.createObjectURL` preview of the original file, no encryption/upload yet); `onSubmit`
+  creates the item with non-image blocks first, uploads each pending image against the new item
+  id, then makes one more `updateItem` call appending the resulting image blocks. **Disclosed
+  limitation, same as Android**: no rollback if an upload fails partway through save -- the item
+  already exists with whatever uploaded successfully, surfaced via a specific error message
+  rather than silently losing state. Editing an existing item uploads a newly picked image
+  immediately (the item already exists) and deletes an existing image block's attachment
+  immediately on remove (gated behind an inline confirm, since -- unlike removing a draft
+  text/secret/note block -- there is no local-only draft state to discard, the file only ever
+  existed as server-side ciphertext). "An image alone satisfies the content requirement" --
+  same rule as Android's `AddItemViewModel`.
+- **Preview + secure blob-URL rendering** (`web/src/views/VaultItemView.vue`,
+  `VaultItemFormView.vue`): image blocks are downloaded+decrypted lazily right after the item
+  loads and rendered via `URL.createObjectURL` on the decrypted `Blob` -- **deliberately never
+  a base64 data-URI**, researched and documented directly in `VaultItemView.vue`'s doc comment:
+  a data-URI would put the *decoded* image bytes directly in the DOM's `src` attribute as a long
+  string, which can end up captured by browser extensions/dev-tools state in a way a blob URL
+  (an opaque local reference the browser resolves in-memory, resolvable only within the page
+  that created it) does not. Every created blob URL is tracked in a `Record<index, url>` and
+  explicitly `URL.revokeObjectURL`'d both when an attachment is removed and on
+  `onBeforeUnmount` (both views) -- no blob URL (or the memory backing it) outlives the
+  component that created it.
+- **Vitest: 117 tests passing** (up from 102 in Sprint 5) -- new `attachmentCrypto.test.ts`
+  (round-trip for file bytes and filename
+  through encrypt → base64 wire → decrypt, unique nonces, tamper/wrong-key detection, mirroring
+  `vaultItemCrypto.test.ts`'s shape), new `vaultApi.test.ts` cases for
+  `uploadAttachment`/`getAttachment`/`deleteAttachment` (request shape, 404 on mismatched
+  item/attachment), and new `stores/vault.test.ts` "attachments" describe block (`uploadAttachment`
+  never sends plaintext filename/bytes to the mocked API, `downloadAttachment` decrypts a
+  realistic server response back to the exact original bytes/filename via the real crypto
+  module, `deleteAttachment` calls through correctly, upload failure surfaces the same
+  session-expired message pattern as every other store action). `npm run lint` / `format:check`
+  / `vue-tsc -b` / `npm run build` all clean.
+- **End-to-end verification, performed for real against the live backend**
+  (`npm run dev` on the default port 5173, required for `CORS_ALLOWED_ORIGINS` -- same setup as
+  every prior Web sprint; `web/.env` pointed at `https://veilkeeper.quezacolt.my.id/`, deleted
+  afterward) + a real headless Chromium session via Playwright (installed temporarily via `npm
+  install --no-save playwright`, uninstalled afterward, same pattern as every prior sprint). All
+  navigation after the initial page load done via real in-app link clicks (not `page.goto()`),
+  same reasoning as every prior Web sprint (memory-only session, a full navigation would log
+  out). Scripted checks, all passed:
+  1. Registered a fresh account, logged in, clicked "+ New item", filled a title + one text
+     block, picked a real 40×30 test PNG (generated via Pillow, not hand-crafted, after the
+     `createImageBitmap` decode-failure bug above was caught and root-caused) via the file
+     input -- confirmed a local pending-image preview rendered *before* submitting (proves the
+     picker itself works independent of upload).
+  2. Submitted -- confirmed navigation to `/items/{id}` (item created, image uploaded, item
+     updated with the image block, all three real network calls against the live backend).
+  3. **Acceptance-critical check**: the attachment card's `<img src>` was confirmed to start
+     with `blob:` (not a data-URI, not the raw API URL), and `img.naturalWidth`/`naturalHeight`
+     were confirmed to be the exact original **40×30** -- proving the full
+     download→decrypt→render pipeline produces a correct, undistorted image, not just "an img
+     tag exists."
+  4. Clicked the attachment's Delete button, confirmed via the inline confirm dialog, and
+     confirmed the attachment card disappeared from the DOM afterward.
+  5. Zero browser console errors across the entire flow (`page.on('console'/'pageerror')`
+     tracked and asserted empty).
+  - **The acceptance-critical "file is not openable as a plain image" check, verified two
+    independent ways** (both against a *separate* run that deliberately skipped step 4's delete,
+    so the ciphertext stayed in place to inspect):
+    1. **Direct filesystem inspection**: `docker exec veilkeeper-api` read the on-disk file at
+       the DB-reported `storage_path` (`/data/attachments/<user_id>/<random>.bin`) -- `file`
+       reported plain `data` (not any recognized image format), and macOS `sips -g pixelWidth`
+       against a copy of the same bytes returned `pixelWidth: <nil>` (fails to parse it as an
+       image at all). A hex dump's first bytes (`76a1 5ed1 ce20 30c5 ...`) match neither the PNG
+       signature (`89 50 4E 47`) nor a JPEG SOI marker (`FF D8`), confirming genuinely random-
+       looking ciphertext, not a mis-tagged real image.
+    2. **Database spot-check**: `SELECT ... FROM attachments` confirmed `mime_type =
+       "image/jpeg"` and `size = 798` bytes (12-byte nonce + 770-byte compressed JPEG + 16-byte
+       GCM tag -- matches the compression step's own logged output exactly, proving the stored
+       size is ciphertext-of-the-compressed-image, not the original 127-byte PNG).
+    - After this inspection, a normal (non-skip-delete) run confirmed the delete flow for real:
+      `SELECT COUNT(*) FROM attachments WHERE vault_item_id = <id>` returned `0` immediately
+      after clicking Delete in the UI and confirming, proving the DB row is genuinely removed
+      server-side, not just hidden client-side.
+  - **Authentication/ownership enforcement, verified directly against the live backend, not
+    assumed from reading the (unchanged) backend code**: `curl` with no `Authorization` header
+    against the just-created attachment's `GET` endpoint returned `401`; a bogus bearer token
+    also returned `401` with `{"error":"unauthorized"}`. A **second, independently registered**
+    test account's real session token was used to `GET` the first account's vault item and its
+    attachment -- both returned `404` (the same "doesn't exist" response CLAUDE.md's Resolved
+    Design Decisions already require, never a distinguishing `403`), confirming cross-user
+    isolation holds for the attachment endpoints exactly as the Android Sprint 5 verification
+    already proved for the Android client.
+  - **This creates a small number of permanent (harmless) test accounts/items/attachments in the
+    live production database** (`web-sprint6-e2e-*@example.com`), same accepted pattern as every
+    prior Web sprint's own live-backend verification. No attachment ciphertext copied out of the
+    container was left behind afterward (the one local copy made for the `file`/`sips` check was
+    deleted from the local filesystem once the check completed).
+- No Web CI workflow added this sprint either (still optional per the roadmap intro's CI
+  policy).
+- **Tooling note**: `rtk` (v0.43.0) confirmed working at the start of this sprint (`rtk
+  --version`, `rtk git log`/`git status`). The bulk of this sprint's shell work was `npm test`/
+  `npm run lint`/`npm run format:check`/`npm run build`/`node <playwright script>`/`docker exec`/
+  `curl`/`python3` (generating a valid test PNG via Pillow) for verification, none of which are
+  part of rtk's git/gh/docker-focused rewrite set the same way `git status`/`git log` are --
+  used directly, consistent with every prior sprint's disclosed fallback pattern (`docker exec`
+  is nominally in rtk's rewrite set, but these were one-off read-only inspection commands, not a
+  workflow rtk specifically optimizes).

@@ -3,8 +3,16 @@ import { useAuthStore } from './auth'
 import * as vaultApi from '../services/vaultApi'
 import { ApiError } from '../services/api'
 import { encryptVaultItemPayload, decryptVaultItemPayload } from '../crypto/vaultItemCrypto'
+import { encryptFile, decryptFile, encryptFilename, decryptFilename } from '../crypto/attachmentCrypto'
 import { bytesToBase64, base64ToBytes } from '../crypto/base64'
 import type { CategoryDto, VaultItemDto, VaultItemPayload } from '../types/vault'
+
+/** A downloaded+decrypted attachment, ready to render (`stores/vault.ts`'s `downloadAttachment`). */
+export interface DecryptedAttachment {
+  blob: Blob
+  filename: string
+  mimeType: string
+}
 
 /** A vault item with its payload already decrypted client-side -- the only shape views ever see. */
 export interface DecryptedVaultItem {
@@ -184,6 +192,73 @@ export const useVaultStore = defineStore('vault', {
       try {
         await vaultApi.deleteVaultItem(token, id)
         this.items = this.items.filter((it) => it.id !== id)
+      } catch (err) {
+        this.errorMessage = describeVaultError(err)
+        throw err
+      }
+    },
+
+    /**
+     * Encrypts `file`'s bytes and `filename` with the VDK and uploads the
+     * result against an *already-existing* `itemId` (the backend endpoint
+     * is `/vault/items/{id}/attachments` -- there is no attachment-only-no-
+     * item concept, same constraint Android's `AddItemViewModel` documents).
+     * Returns the new attachment's server-assigned ID -- callers are
+     * responsible for appending an `{type: "image", value: String(id)}`
+     * content block and calling `updateItem` (mirrors Android's
+     * create-item-then-upload-then-update-item flow exactly, see
+     * CLAUDE.md's Sprint 5 "Add Item flow decision").
+     */
+    async uploadAttachment(
+      itemId: number,
+      data: Uint8Array,
+      mimeType: string,
+      filename: string,
+    ): Promise<number> {
+      const { token, vdk } = this.requireSession()
+      this.errorMessage = null
+      try {
+        const encryptedData = await encryptFile(vdk, data)
+        const encryptedFilename = await encryptFilename(vdk, filename)
+        const dto = await vaultApi.uploadAttachment(
+          token,
+          itemId,
+          bytesToBase64(encryptedFilename),
+          mimeType,
+          bytesToBase64(encryptedData),
+        )
+        return dto.id
+      } catch (err) {
+        this.errorMessage = describeVaultError(err)
+        throw err
+      }
+    },
+
+    /** Downloads an attachment's ciphertext and decrypts it client-side -- the server never sees plaintext bytes or filename. */
+    async downloadAttachment(itemId: number, attachmentId: number): Promise<DecryptedAttachment> {
+      const { token, vdk } = this.requireSession()
+      this.errorMessage = null
+      try {
+        const dto = await vaultApi.getAttachment(token, itemId, attachmentId)
+        const data = await decryptFile(vdk, base64ToBytes(dto.encrypted_data))
+        const filename = await decryptFilename(vdk, base64ToBytes(dto.encrypted_filename))
+        return {
+          blob: new Blob([data.slice().buffer], { type: dto.mime_type }),
+          filename,
+          mimeType: dto.mime_type,
+        }
+      } catch (err) {
+        this.errorMessage = describeVaultError(err)
+        throw err
+      }
+    },
+
+    /** Deletes an attachment server-side. Callers must separately remove the corresponding content block + call `updateItem` (see `VaultItemFormView.vue`) -- this action alone does not touch the item's payload. */
+    async deleteAttachment(itemId: number, attachmentId: number): Promise<void> {
+      const { token } = this.requireSession()
+      this.errorMessage = null
+      try {
+        await vaultApi.deleteAttachment(token, itemId, attachmentId)
       } catch (err) {
         this.errorMessage = describeVaultError(err)
         throw err

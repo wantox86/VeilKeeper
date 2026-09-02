@@ -159,3 +159,73 @@ describe('vaultApi vault items', () => {
     await expect(vaultApi.deleteVaultItem(TOKEN, 1)).resolves.toBeUndefined()
   })
 })
+
+describe('vaultApi attachments', () => {
+  it('uploadAttachment posts encrypted_filename/mime_type/encrypted_data to /vault/items/{id}/attachments', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(201, {
+        id: 55,
+        vault_item_id: 10,
+        encrypted_filename: 'ZmY=',
+        mime_type: 'image/jpeg',
+        size: 3,
+        created_at: 'a',
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await vaultApi.uploadAttachment(TOKEN, 10, 'ZmY=', 'image/jpeg', 'YWJj')
+
+    expect(result.id).toBe(55)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/vault/items/10/attachments')
+    expect(JSON.parse(init.body as string)).toEqual({
+      encrypted_filename: 'ZmY=',
+      mime_type: 'image/jpeg',
+      encrypted_data: 'YWJj',
+    })
+  })
+
+  it('getAttachment returns the encrypted_data field for client-side decrypt', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          id: 55,
+          vault_item_id: 10,
+          encrypted_filename: 'ZmY=',
+          mime_type: 'image/png',
+          size: 3,
+          encrypted_data: 'Y2lwaGVy',
+          created_at: 'a',
+        }),
+      ),
+    )
+
+    const result = await vaultApi.getAttachment(TOKEN, 10, 55)
+
+    expect(result.encrypted_data).toBe('Y2lwaGVy')
+  })
+
+  it('deleteAttachment resolves on 204', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(vaultApi.deleteAttachment(TOKEN, 10, 55)).resolves.toBeUndefined()
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toContain('/vault/items/10/attachments/55')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('deleteAttachment throws ApiError on a 404 -- e.g. mismatched item/attachment or another user', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse(404, { error: 'not_found', message: 'attachment not found' })),
+    )
+
+    await expect(vaultApi.deleteAttachment(TOKEN, 10, 999)).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+    })
+  })
+})

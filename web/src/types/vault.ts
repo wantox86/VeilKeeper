@@ -36,11 +36,15 @@ export interface VaultItemDto {
  * JSON shape to match byte-for-byte across clients decrypting each other's
  * items.
  *
- * Sprint 3 scope: `type` is `"text" | "secret" | "note"` only --
- * `"image"` (attachment-linked) is Android Sprint 5 / Web Sprint 6, not
- * implemented here.
+ * Web Sprint 6 adds `"image"` -- same attachment-linking decision Android
+ * Sprint 5 / the backend's `attachment_handlers.go` package doc already
+ * made and this repo treats as a cross-client contract: an "image" block's
+ * existing generic `value` field holds the attachment's server-assigned
+ * numeric ID as a decimal string (e.g. `"42"`), never the image bytes. No
+ * new field added -- `value` already fits, matching CLAUDE.md's existing
+ * decision here field-for-field.
  */
-export type ContentBlockType = 'text' | 'secret' | 'note'
+export type ContentBlockType = 'text' | 'secret' | 'note' | 'image'
 
 export interface ContentBlock {
   type: ContentBlockType
@@ -51,4 +55,28 @@ export interface ContentBlock {
 export interface VaultItemPayload {
   title: string
   content: ContentBlock[]
+}
+
+/**
+ * Wire DTOs for `POST/GET/DELETE
+ * /api/v1/vault/items/{id}/attachments[/{attachmentId}]` -- field names
+ * match the backend's `attachmentResponse`/`attachmentDataResponse` Go
+ * structs (`backend/internal/httpserver/attachment_handlers.go`) exactly.
+ * `encrypted_filename` and `encrypted_data` are base64 of opaque
+ * AES-256-GCM ciphertext (`nonce || ciphertext+tag`) -- the server never
+ * decodes either, only moves bytes; this client is the only place either
+ * gets decrypted.
+ */
+export interface AttachmentDto {
+  id: number
+  vault_item_id: number
+  encrypted_filename: string
+  mime_type: string
+  size: number
+  created_at: string
+}
+
+/** Returned only by GET (download) -- includes the encrypted bytes. */
+export interface AttachmentDataDto extends AttachmentDto {
+  encrypted_data: string
 }

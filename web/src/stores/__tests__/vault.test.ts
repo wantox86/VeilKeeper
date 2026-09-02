@@ -160,4 +160,80 @@ describe('useVaultStore', () => {
     await vault.deleteItem(1)
     expect(vault.items).toHaveLength(0)
   })
+
+  describe('attachments (Web Sprint 6)', () => {
+    it('uploadAttachment encrypts bytes+filename client-side and returns the new attachment id -- the server call never receives plaintext', async () => {
+      activateSession()
+      const uploadSpy = vi.spyOn(vaultApi, 'uploadAttachment').mockImplementation(async (_token, itemId) => ({
+        id: 55,
+        vault_item_id: itemId,
+        encrypted_filename: 'ignored',
+        mime_type: 'image/jpeg',
+        size: 4,
+        created_at: '2026-01-01T00:00:00Z',
+      }))
+
+      const vault = useVaultStore()
+      const plaintext = new TextEncoder().encode('fake-jpeg-bytes')
+      const attachmentId = await vault.uploadAttachment(10, plaintext, 'image/jpeg', 'vpn-screenshot.jpg')
+
+      expect(attachmentId).toBe(55)
+      const [, itemId, encryptedFilenameB64, mimeType, encryptedDataB64] = uploadSpy.mock.calls[0]
+      expect(itemId).toBe(10)
+      expect(mimeType).toBe('image/jpeg')
+      // Never the plaintext filename or file bytes -- base64 ciphertext only.
+      expect(encryptedFilenameB64).not.toContain('vpn-screenshot')
+      expect(atob(encryptedDataB64)).not.toContain('fake-jpeg-bytes')
+    })
+
+    it('downloadAttachment decrypts the server response back to the original bytes and filename', async () => {
+      activateSession()
+      const vault = useVaultStore()
+
+      // Round-trip through the real crypto module to build a realistic
+      // server response, then verify downloadAttachment decrypts it back.
+      const { encryptFile, encryptFilename } = await import('../../crypto/attachmentCrypto')
+      const { bytesToBase64 } = await import('../../crypto/base64')
+      const originalBytes = crypto.getRandomValues(new Uint8Array(32))
+      const encryptedData = await encryptFile(VDK, originalBytes)
+      const encryptedFilename = await encryptFilename(VDK, 'router-admin.png')
+
+      vi.spyOn(vaultApi, 'getAttachment').mockResolvedValue({
+        id: 55,
+        vault_item_id: 10,
+        encrypted_filename: bytesToBase64(encryptedFilename),
+        mime_type: 'image/png',
+        size: encryptedData.length,
+        encrypted_data: bytesToBase64(encryptedData),
+        created_at: '2026-01-01T00:00:00Z',
+      })
+
+      const result = await vault.downloadAttachment(10, 55)
+
+      expect(result.filename).toBe('router-admin.png')
+      expect(result.mimeType).toBe('image/png')
+      expect(new Uint8Array(await result.blob.arrayBuffer())).toEqual(originalBytes)
+    })
+
+    it('deleteAttachment calls the API with itemId and attachmentId', async () => {
+      activateSession()
+      const deleteSpy = vi.spyOn(vaultApi, 'deleteAttachment').mockResolvedValue(undefined)
+
+      const vault = useVaultStore()
+      await vault.deleteAttachment(10, 55)
+
+      expect(deleteSpy).toHaveBeenCalledWith('session-abc', 10, 55)
+    })
+
+    it('surfaces a clear error message and rethrows when upload fails (e.g. session expired mid-flow)', async () => {
+      activateSession()
+      vi.spyOn(vaultApi, 'uploadAttachment').mockRejectedValue(new ApiError(401, 'unauthorized', 'expired'))
+
+      const vault = useVaultStore()
+      await expect(
+        vault.uploadAttachment(10, new Uint8Array([1]), 'image/png', 'x.png'),
+      ).rejects.toBeInstanceOf(ApiError)
+      expect(vault.errorMessage).toBe('Your session has expired. Please log in again.')
+    })
+  })
 })

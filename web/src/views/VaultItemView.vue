@@ -51,14 +51,64 @@ onBeforeUnmount(() => {
   for (const timer of Object.values(copyStatusTimers)) clearTimeout(timer)
 })
 
+/**
+ * Attachment preview state (Web Sprint 6). Each "image" content block's
+ * `value` field holds an attachment ID (CLAUDE.md's attachment-linking
+ * decision) -- images are downloaded+decrypted lazily right after the item
+ * loads and rendered via `URL.createObjectURL` on the decrypted `Blob`,
+ * never as a base64 data-URI: a data-URI would put the *decoded* image
+ * bytes directly in the DOM's `src` attribute as a long string, which can
+ * end up logged/persisted by browser extensions, dev tools state, or (for
+ * navigations, not relevant to an `<img>` src, but the same caution
+ * applies) browser history -- a blob URL is an opaque local reference the
+ * browser resolves in-memory and never persists anywhere on its own. Every
+ * created blob URL is tracked in `imageUrls` and explicitly
+ * `URL.revokeObjectURL`'d both when an image is removed and on unmount
+ * (`onBeforeUnmount` below) so no blob URL (and the memory backing it)
+ * outlives this view.
+ */
+const imageUrls = ref<Record<number, string>>({})
+const imageLoading = ref<Record<number, boolean>>({})
+const imageError = ref<Record<number, string>>({})
+const deletingAttachment = ref<number | null>(null) // index of the image block pending a remove-confirm
+const attachmentActionError = ref<string | null>(null)
+
+function revokeAllImageUrls(): void {
+  for (const url of Object.values(imageUrls.value)) URL.revokeObjectURL(url)
+  imageUrls.value = {}
+}
+
+onBeforeUnmount(revokeAllImageUrls)
+
+async function loadImage(index: number, attachmentId: number): Promise<void> {
+  if (imageUrls.value[index]) return
+  imageLoading.value = { ...imageLoading.value, [index]: true }
+  imageError.value = { ...imageError.value, [index]: '' }
+  try {
+    const { blob } = await vault.downloadAttachment(itemId.value, attachmentId)
+    imageUrls.value = { ...imageUrls.value, [index]: URL.createObjectURL(blob) }
+  } catch {
+    imageError.value = { ...imageError.value, [index]: vault.errorMessage ?? 'Failed to load image.' }
+  } finally {
+    imageLoading.value = { ...imageLoading.value, [index]: false }
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   loadError.value = null
+  revokeAllImageUrls()
   try {
     item.value = await vault.fetchItem(itemId.value)
     if (!vault.categories.length) {
       await vault.fetchCategories()
     }
+    item.value.payload.content.forEach((block, index) => {
+      if (block.type === 'image') {
+        const attachmentId = Number(block.value)
+        if (Number.isFinite(attachmentId)) void loadImage(index, attachmentId)
+      }
+    })
   } catch {
     loadError.value = vault.errorMessage ?? 'Failed to load this item.'
   } finally {
@@ -67,6 +117,27 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
+
+/** Deletes the attachment server-side, removes its content block, and persists the item -- see `VaultItemFormView.vue`'s doc comment for why this is an immediate (not draft) delete. */
+async function confirmDeleteAttachment(index: number): Promise<void> {
+  if (!item.value) return
+  const block = item.value.payload.content[index]
+  const attachmentId = Number(block.value)
+  attachmentActionError.value = null
+  try {
+    await vault.deleteAttachment(itemId.value, attachmentId)
+    const newContent = item.value.payload.content.filter((_, i) => i !== index)
+    item.value = await vault.updateItem(itemId.value, {
+      title: item.value.payload.title,
+      content: newContent,
+    })
+    await load() // re-fetch + reload remaining image previews so indices stay in sync
+  } catch {
+    attachmentActionError.value = vault.errorMessage ?? 'Failed to remove attachment.'
+  } finally {
+    deletingAttachment.value = null
+  }
+}
 
 function toggleReveal(index: number): void {
   const next = new Set(revealed.value)
@@ -126,28 +197,63 @@ async function confirmDelete(): Promise<void> {
         </div>
       </div>
 
+      <p v-if="attachmentActionError" class="banner banner-error" role="alert">{{ attachmentActionError }}</p>
+
       <ul class="blocks">
         <li v-for="(block, index) in item.payload.content" :key="index" class="block">
-          <div class="block-header">
-            <span class="block-type">{{ block.type }}</span>
-            <span v-if="block.label" class="block-label">{{ block.label }}</span>
-          </div>
-          <div class="block-value">
-            <span v-if="block.type === 'secret' && !revealed.has(index)" class="masked">••••••••</span>
-            <span v-else class="value-text">{{ block.value }}</span>
-            <span class="block-buttons">
-              <button
-                v-if="block.type === 'secret'"
-                type="button"
-                class="reveal"
-                @click="toggleReveal(index)"
-              >
-                {{ revealed.has(index) ? 'Hide' : 'Show' }}
-              </button>
-              <button type="button" class="reveal" @click="copyBlock(index, block.value)">Copy</button>
-            </span>
-          </div>
-          <p v-if="copyStatus[index]" class="copy-status">{{ copyStatus[index] }}</p>
+          <template v-if="block.type === 'image'">
+            <div class="block-header">
+              <span class="block-type">image</span>
+            </div>
+            <div class="attachment-card">
+              <img
+                v-if="imageUrls[index]"
+                :src="imageUrls[index]"
+                alt="Decrypted attachment preview"
+                class="attachment-image"
+              />
+              <div v-else-if="imageLoading[index]" class="attachment-placeholder">Decrypting…</div>
+              <div v-else-if="imageError[index]" class="attachment-placeholder attachment-error">
+                {{ imageError[index] }}
+              </div>
+              <div v-else class="attachment-placeholder">Unavailable</div>
+
+              <div class="attachment-actions">
+                <div v-if="deletingAttachment === index" class="confirm-inline">
+                  <span>Delete this image permanently?</span>
+                  <button type="button" class="danger" @click="confirmDeleteAttachment(index)">
+                    Confirm
+                  </button>
+                  <button type="button" @click="deletingAttachment = null">Cancel</button>
+                </div>
+                <button v-else type="button" class="reveal" @click="deletingAttachment = index">
+                  Delete
+                </button>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="block-header">
+              <span class="block-type">{{ block.type }}</span>
+              <span v-if="block.label" class="block-label">{{ block.label }}</span>
+            </div>
+            <div class="block-value">
+              <span v-if="block.type === 'secret' && !revealed.has(index)" class="masked">••••••••</span>
+              <span v-else class="value-text">{{ block.value }}</span>
+              <span class="block-buttons">
+                <button
+                  v-if="block.type === 'secret'"
+                  type="button"
+                  class="reveal"
+                  @click="toggleReveal(index)"
+                >
+                  {{ revealed.has(index) ? 'Hide' : 'Show' }}
+                </button>
+                <button type="button" class="reveal" @click="copyBlock(index, block.value)">Copy</button>
+              </span>
+            </div>
+            <p v-if="copyStatus[index]" class="copy-status">{{ copyStatus[index] }}</p>
+          </template>
         </li>
         <li v-if="!item.payload.content.length" class="empty">No content blocks.</li>
       </ul>
@@ -315,6 +421,69 @@ h1 {
 .empty {
   color: #888;
   font-size: 0.9rem;
+}
+
+.attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.attachment-image {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 0.4rem;
+  object-fit: contain;
+  background: #f2f4f7;
+}
+
+.attachment-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 120px;
+  border-radius: 0.4rem;
+  background: #f2f4f7;
+  color: #888;
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 0.5rem;
+}
+
+.attachment-error {
+  color: #c1121f;
+}
+
+.attachment-actions {
+  flex-shrink: 0;
+}
+
+.confirm-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.confirm-inline .danger {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #f4b8b8;
+  border-radius: 0.4rem;
+  background: white;
+  color: #c1121f;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.confirm-inline button:not(.danger) {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #d0d5dd;
+  border-radius: 0.4rem;
+  background: white;
+  cursor: pointer;
+  font-size: 0.75rem;
 }
 
 .banner {
