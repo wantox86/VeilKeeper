@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import Icon from '../components/Icon.vue'
 
 /**
  * Web Session Lock unlock screen (SPEC-BASE.md Section 32) -- the Web
@@ -43,7 +44,10 @@ async function onLogoutInstead(): Promise<void> {
 <template>
   <main class="auth-page">
     <div class="auth-card">
-      <h1>Vault locked</h1>
+      <div class="brand-mark">
+        <Icon name="lock" :size="26" />
+        <h1>Vault locked</h1>
+      </div>
       <p class="subtitle">
         Signed in as <strong>{{ auth.email }}</strong
         >. Enter your password to continue.
@@ -82,57 +86,68 @@ async function onLogoutInstead(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f5f6f8;
-  font-family: system-ui, sans-serif;
+  background: var(--color-background);
+  padding: var(--space-lg);
 }
 
 .auth-card {
   width: 100%;
   max-width: 24rem;
-  padding: 2rem;
-  border-radius: 0.75rem;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  padding: var(--space-xl);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.brand-mark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-primary);
 }
 
 h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.5rem;
+  margin: 0;
+  font-size: var(--font-size-title-lg);
+  color: var(--color-on-surface);
 }
 
 .subtitle {
-  margin: 0 0 1.5rem;
-  color: #666;
-  font-size: 0.9rem;
+  margin: var(--space-xs) 0 var(--space-lg);
+  color: var(--color-on-surface-variant);
+  font-size: var(--font-size-body-md);
 }
 
 form {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--space-xs);
 }
 
 label {
-  font-size: 0.85rem;
+  font-size: var(--font-size-label-lg);
   font-weight: 600;
-  margin-top: 0.75rem;
+  margin-top: var(--space-sm);
 }
 
 input {
   padding: 0.6rem 0.75rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
   font-size: 1rem;
+  background: var(--color-surface);
+  color: var(--color-on-surface);
 }
 
 button {
-  margin-top: 1.5rem;
+  margin-top: var(--space-lg);
   padding: 0.65rem;
   border: none;
-  border-radius: 0.5rem;
-  background: #3730a3;
-  color: white;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   font-size: 1rem;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -143,19 +158,19 @@ button:disabled {
 
 .banner {
   padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  font-size: 0.9rem;
-  margin-bottom: 1rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body-md);
+  margin-bottom: var(--space-md);
 }
 
 .banner-error {
-  background: #fef3f2;
-  color: #c1121f;
+  background: var(--color-error-container);
+  color: var(--color-on-error-container);
 }
 
 .footer-link {
-  margin-top: 1.5rem;
-  font-size: 0.9rem;
+  margin-top: var(--space-lg);
+  font-size: var(--font-size-body-md);
   text-align: center;
 }
 
@@ -164,7 +179,7 @@ button:disabled {
   padding: 0;
   border: none;
   background: none;
-  color: #3730a3;
+  color: var(--color-primary);
   text-decoration: underline;
   font-size: inherit;
   cursor: pointer;

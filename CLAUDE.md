@@ -873,8 +873,7 @@ Planned roadmap (subject to revision as sprints land):
   Android Sprint 4), entirely client-side, no plaintext or search term ever sent to the
   backend. Complete, see below.
 - **Sprint 6** — attachments (mirrors Android Sprint 5). Complete, see below.
-- **Sprint 7 (planned)** — UI polish. Not yet scoped in detail; should get its own
-  CLAUDE.md decisions section if anything is ambiguous, same as Android's sprints did.
+- **Sprint 7** — UI polish (mirrors Android Sprint 6). Complete, see below.
 - **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
@@ -1646,3 +1645,132 @@ client-produced ciphertext regardless of which client uploaded them.
   used directly, consistent with every prior sprint's disclosed fallback pattern (`docker exec`
   is nominally in rtk's rewrite set, but these were one-off read-only inspection commands, not a
   workflow rtk specifically optimizes).
+
+### Web Sprint 7 (UI Polish) — complete
+
+Mirrors Android Sprint 6's scope exactly: a dedicated visual/UX pass over the Web client, **no
+new features, no backend changes**. Every view that existed before this sprint (Login, Register,
+Dashboard/Home, Category, VaultItem detail, VaultItemForm, Settings, Locked, HealthCheck) kept
+its exact logic/behavior -- only markup/styling changed, plus three new shared state components
+and one new layout shell.
+
+- **"Midnight Vault" design tokens** (`web/src/style.css`) -- copied 1:1 from Android's own
+  palette (`android/app/.../ui/theme/Color.kt`), not re-derived or approximated: same hex values
+  for primary/secondary/tertiary/background/surface/error in both light and dark, so the two
+  clients read as one product. CSS custom properties on `:root`, overridden inside a
+  `@media (prefers-color-scheme: dark)` block -- **no manual light/dark toggle**, matching
+  Android's own `VeilKeeperTheme` (`isSystemInDarkTheme()`, no toggle either), picked as "the
+  simpler option that's also consistent with Android's behavior" per this sprint's own brief.
+  Two tokens have no Android equivalent (M3 has no built-in "success"/"warning" role) --
+  `--color-success`/`--color-warning` (+ container/border variants) were added as a disclosed
+  Web-only visual decision (SPEC-BASE.md Section 56 Rule 2: no crypto/architecture impact, so
+  decided directly rather than stopped-and-asked) so confirmation and cautionary banners read
+  distinctly from both errors (red) and the tertiary brand accent (violet).
+- **Spacing/typography scale**, also token-based: `--space-xs..xxl` mirrors Android's
+  `Spacing.kt` (4/8/16/24/32/48) 1:1; `--font-size-headline/title-lg/title-md/...` is an
+  idiomatic web sizing scale *inspired by* (not a literal dp→px port of) `Type.kt`'s semibold
+  headline/title + open-line-height body overrides.
+- **Iconography**: the app had zero icons before this sprint (every action was a text-label
+  button) -- rather than add an icon library dependency (judged overengineering at this scope,
+  SPEC-BASE.md Section 56 Rule 1), `web/src/components/Icon.vue` is a small hand-authored set of
+  ~14 outline SVGs sharing one visual language (24x24 viewBox, `currentColor` stroke, 1.75
+  stroke-width, round caps), used consistently for a handful of icon-only controls (reveal/hide,
+  copy, delete, add) and the brand mark -- text labels stayed the primary affordance everywhere
+  else, so nothing became icon-only/ambiguous, and icons/emoji are never mixed (the app still
+  has zero emoji).
+- **Shared state components** (`web/src/components/`), mirroring Android's `StateViews.kt`
+  field-for-field: `EmptyState.vue` (icon + title + optional message + optional action, emits
+  `action` rather than taking a callback prop, the idiomatic Vue equivalent of Compose's
+  `onAction: (() -> Unit)?`), `LoadingState.vue` (spinner + optional label, `role="status"`/
+  `aria-label` for screen readers, a plain CSS `@keyframes` ring -- no animation library, and
+  respects `prefers-reduced-motion`), `ErrorState.vue` (icon + message + optional retry,
+  `role="alert"`, `showRetry` prop rather than inferring from `$attrs` -- Vue 3 strips a declared
+  `emits` event's listener out of `$attrs` automatically, so attribute-sniffing for "was a
+  handler passed" doesn't work reliably). Used everywhere a view previously rendered ad hoc
+  `<p v-if="loading">Loading…</p>` / a bare `.banner-error` for a whole-view failure (inline
+  form/action errors, e.g. "Title is required.", intentionally kept as the lighter `.banner`
+  treatment -- a full centered icon block would be wrong under a text field). Every one of these
+  three components has its own Vitest + `@vue/test-utils` spec (`components/__tests__/`) covering
+  prop-driven rendering and emitted events -- `@vue/test-utils` was added as a new devDependency
+  for this (the project had none before; existing tests only exercised stores/services, not
+  components), with per-file `// @vitest-environment jsdom` docblocks rather than flipping the
+  project's global Vitest environment to `jsdom` (which is `node` globally so `vitest.setup.ts`'s
+  `delete globalThis.fetch` Argon2-under-Node workaround keeps working for every other test file).
+- **`AppLayout.vue`** -- new shared shell (topbar: brand mark + search shortcut + user email +
+  Settings/Logout icon links; sidebar: Home + live category list from the vault store) used by
+  every authenticated view (Dashboard, Category, VaultItem detail, VaultItemForm, Settings),
+  replacing each view's own ad hoc `&larr; Home` text link and (on Dashboard) its own duplicated
+  header/logout button. Loosely follows SPEC-BASE.md Section 25 "Web Layout"'s sidebar+topbar
+  sketch (explicitly "a conceptual layout, not a pixel-perfect specification" per that section).
+  **Responsive breakpoint at 900px**: below it, the sidebar collapses to a horizontal
+  scrollable chip row *above* the content instead of a hamburger/drawer -- deliberately no new
+  open/close state, since Section 24 only asks mobile browser to stay "usable", not be the
+  primary experience (desktop/tablet is). Verified real usability at 375px width (see below), not
+  just "doesn't overflow." **Deliberately does not own the global search box** -- that stays on
+  `DashboardView.vue`, which already holds the full decrypted item list Sprint 5's search filters
+  over; duplicating that fetch/filter state into the layout shell for a topbar-level search input
+  was judged more machinery than a pure visual/UX sprint justifies. The topbar's search icon is a
+  plain link to `/dashboard`, where the real search box already lives.
+- **Branding**: confirmed **"VeilKeeper"** (one word) was already correct everywhere
+  (`index.html`'s `<title>`, every view's brand mark) -- no `"Veil Keepers"` (SPEC-BASE.md's own
+  two-word name, belongs to Qoder's build per this repo's established naming split) found
+  anywhere in `web/`, so no change needed here beyond adding the lock-icon brand mark next to the
+  existing wordmark on Login/Register/Locked/the new topbar.
+- **Accessibility**: a single consistent `:focus-visible` outline (`--color-primary`, 2px, added
+  globally in `style.css`) replaces each browser's inconsistent default focus ring; every
+  icon-only control got an explicit `aria-label` (Settings/Logout/Search links, Show/Hide/Copy/
+  Delete buttons); `LoadingState`/`ErrorState` use `role="status"`/`role="alert"` respectively;
+  every `<img>` already had (and kept) real `alt` text (decrypted attachment previews, pending
+  picks). Keyboard form submission (Enter key) was already working pre-sprint (plain
+  `<form @submit.prevent>` + `type="submit"` buttons, standard browser behavior) -- confirmed,
+  not re-implemented.
+- **Hindari-list compliance** (this sprint's explicit avoid-list): no gradients anywhere, no
+  glassmorphism, no flashy animations (the only two animations in the whole app are the loading
+  spinner's linear rotation and a 150ms background-color cross-fade on the `<body>` for
+  light/dark-scheme changes), no generic CRUD table look (card/list rows throughout, matching
+  the pre-existing visual direction), corner radii kept restrained (`--radius-sm/md/lg` = 6.4/8/
+  12px, unchanged from the pre-sprint ad hoc values, never "excessively rounded").
+- **Vitest: 126 tests passing** (up from 117 in Sprint 6 -- 9 new component tests, 3 each for
+  `EmptyState`/`LoadingState`/`ErrorState`). `npm run lint` / `format:check` / `vue-tsc -b` /
+  `npm run build` all clean.
+- **Visual verification, performed for real via headless Chromium** (`npm run dev` on the
+  default port 5173 against `https://veilkeeper.quezacolt.my.id/`, same live-backend pattern as
+  every prior Web sprint; `playwright` installed temporarily via `npm install --no-save
+  playwright`, uninstalled afterward -- `@vue/test-utils` is the only testing dependency this
+  sprint kept). One throwaway account (`web-sprint7-e2e-*@example.com`, same accepted permanent-
+  test-account pattern as every prior sprint) registered a real "GitLab Production" item with a
+  masked secret block and a real uploaded/encrypted/decrypted image attachment (a genuine Pillow-
+  generated PNG, same lesson Sprint 6 already learned about hand-crafted PNGs failing
+  `createImageBitmap`). Screenshotted Login, Dashboard, VaultItem detail (with the attachment),
+  and Settings across all 4 combinations of light/dark (`colorScheme` context option) x
+  desktop/mobile (1440px / 375px viewport) -- 16 screenshots total, zero browser console
+  errors/pageerrors across every one of the 4 browser contexts. All in-app navigation done via
+  real link/button clicks, never `page.goto()` mid-session (would drop the memory-only Pinia
+  session, same reasoning every prior sprint's own E2E script documents) -- confirmed this the
+  hard way mid-sprint: an early script version used `waitForURL('**/items/**')`, which falsely
+  matched immediately on `/items/new` (a substring of the pattern) and raced ahead of the actual
+  save, then later used `page.goto(itemUrl)` to revisit the item, which triggered a full reload
+  and silently logged the page out (screenshot came back as the login page). Fixed by waiting on
+  `/\/items\/\d+$/` and reaching every subsequent page via real clicks (sidebar "Home" link,
+  dashboard item row, topbar Settings icon) instead.
+  - **What the screenshots actually show**: dark mode is a genuine near-black (`#121318`)
+    background with light-indigo (`#bcc2ff`) accents, not an inverted/washed-out light theme;
+    light mode is nowhere near stark white (`#f8f8fc` background, white `#ffffff` cards) so
+    surfaces read as distinct layers. At 1440px, Dashboard/Category/VaultItem/Settings all show
+    the persistent left sidebar + topbar from `AppLayout.vue`, categories with live item counts,
+    and the search bar with a leading search icon. At 375px, the same views show the sidebar
+    collapsed into a horizontally-scrollable category chip row directly under the topbar (Home +
+    visible category chips, remainder scrollable) with the main content stacked full-width below
+    -- confirmed actually usable (readable text, tappable-sized buttons, no horizontal overflow),
+    not just "doesn't visibly break." The VaultItem detail screenshot shows the masked secret
+    (`••••••••` + Show/Copy buttons) and the image attachment card (solid-color test image +
+    Delete button) side by side in a bordered block, matching SPEC-BASE.md Section 25's own
+    conceptual mock (masked secret + eye/copy icons, image/notes below) reasonably closely.
+- No Web CI workflow added this sprint either (still optional per the roadmap intro's CI policy)
+  -- this sprint touched no CI-relevant config.
+- **Tooling note**: `rtk` (v0.43.0) confirmed working at the start of this sprint (`rtk
+  --version`, `rtk git log`/`git status`). The bulk of this sprint's shell work was `npm install`/
+  `npm run lint`/`npm run format`/`npm test`/`npm run build`/`node <playwright script>` for
+  verification, none of which are part of rtk's git/gh/docker-focused rewrite set the same way
+  `git status`/`git log` are -- used directly, consistent with every prior Web sprint's disclosed
+  fallback pattern.

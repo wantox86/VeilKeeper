@@ -4,6 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { useVaultStore, type DecryptedVaultItem } from '../stores/vault'
 import { useSettingsStore } from '../stores/settings'
 import { copyToClipboard } from '../crypto/clipboard'
+import AppLayout from '../components/AppLayout.vue'
+import EmptyState from '../components/EmptyState.vue'
+import LoadingState from '../components/LoadingState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import Icon from '../components/Icon.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -153,6 +158,8 @@ function categoryName(categoryId: number): string {
   return vault.categories.find((c) => c.id === categoryId)?.name ?? 'Unknown'
 }
 
+const notFoundMessage = "This item doesn't exist, or you don't have access to it."
+
 async function confirmDelete(): Promise<void> {
   deleting.value = true
   try {
@@ -168,221 +175,243 @@ async function confirmDelete(): Promise<void> {
 </script>
 
 <template>
-  <main class="item-page">
-    <RouterLink to="/dashboard" class="back-link">&larr; Home</RouterLink>
+  <AppLayout>
+    <div class="item-page">
+      <LoadingState v-if="loading" full-height />
+      <ErrorState v-else-if="loadError || !item" :message="loadError ?? notFoundMessage" />
+      <template v-else>
+        <header>
+          <div>
+            <h1>{{ item.payload.title }}</h1>
+            <p class="category-tag">{{ categoryName(item.categoryId) }}</p>
+          </div>
+          <div class="actions">
+            <RouterLink :to="`/items/${item.id}/edit`" class="button-link">Edit</RouterLink>
+            <button type="button" class="danger" aria-label="Delete item" @click="showDeleteConfirm = true">
+              <Icon name="trash" :size="16" />
+              Delete
+            </button>
+          </div>
+        </header>
 
-    <div v-if="loading">Loading…</div>
-    <div v-else-if="loadError || !item" class="banner banner-error" role="alert">
-      {{ loadError ?? "This item doesn't exist, or you don't have access to it." }}
-    </div>
-    <template v-else>
-      <header>
-        <div>
-          <h1>{{ item.payload.title }}</h1>
-          <p class="category-tag">{{ categoryName(item.categoryId) }}</p>
+        <div v-if="showDeleteConfirm" class="confirm-box">
+          <p>Delete this item permanently? This cannot be undone.</p>
+          <div class="confirm-actions">
+            <button type="button" class="danger" :disabled="deleting" @click="confirmDelete">
+              {{ deleting ? 'Deleting…' : 'Confirm delete' }}
+            </button>
+            <button type="button" @click="showDeleteConfirm = false">Cancel</button>
+          </div>
         </div>
-        <div class="actions">
-          <RouterLink :to="`/items/${item.id}/edit`" class="button-link">Edit</RouterLink>
-          <button type="button" class="danger" @click="showDeleteConfirm = true">Delete</button>
-        </div>
-      </header>
 
-      <div v-if="showDeleteConfirm" class="confirm-box">
-        <p>Delete this item permanently? This cannot be undone.</p>
-        <div class="confirm-actions">
-          <button type="button" class="danger" :disabled="deleting" @click="confirmDelete">
-            {{ deleting ? 'Deleting…' : 'Confirm delete' }}
-          </button>
-          <button type="button" @click="showDeleteConfirm = false">Cancel</button>
-        </div>
-      </div>
+        <p v-if="attachmentActionError" class="banner banner-error" role="alert">
+          {{ attachmentActionError }}
+        </p>
 
-      <p v-if="attachmentActionError" class="banner banner-error" role="alert">{{ attachmentActionError }}</p>
-
-      <ul class="blocks">
-        <li v-for="(block, index) in item.payload.content" :key="index" class="block">
-          <template v-if="block.type === 'image'">
-            <div class="block-header">
-              <span class="block-type">image</span>
-            </div>
-            <div class="attachment-card">
-              <img
-                v-if="imageUrls[index]"
-                :src="imageUrls[index]"
-                alt="Decrypted attachment preview"
-                class="attachment-image"
-              />
-              <div v-else-if="imageLoading[index]" class="attachment-placeholder">Decrypting…</div>
-              <div v-else-if="imageError[index]" class="attachment-placeholder attachment-error">
-                {{ imageError[index] }}
+        <ul v-if="item.payload.content.length" class="blocks">
+          <li v-for="(block, index) in item.payload.content" :key="index" class="block">
+            <template v-if="block.type === 'image'">
+              <div class="block-header">
+                <Icon name="image" :size="14" class="block-icon" />
+                <span class="block-type">image</span>
               </div>
-              <div v-else class="attachment-placeholder">Unavailable</div>
-
-              <div class="attachment-actions">
-                <div v-if="deletingAttachment === index" class="confirm-inline">
-                  <span>Delete this image permanently?</span>
-                  <button type="button" class="danger" @click="confirmDeleteAttachment(index)">
-                    Confirm
-                  </button>
-                  <button type="button" @click="deletingAttachment = null">Cancel</button>
+              <div class="attachment-card">
+                <img
+                  v-if="imageUrls[index]"
+                  :src="imageUrls[index]"
+                  alt="Decrypted attachment preview"
+                  class="attachment-image"
+                />
+                <div v-else-if="imageLoading[index]" class="attachment-placeholder">Decrypting…</div>
+                <div v-else-if="imageError[index]" class="attachment-placeholder attachment-error">
+                  {{ imageError[index] }}
                 </div>
-                <button v-else type="button" class="reveal" @click="deletingAttachment = index">
-                  Delete
-                </button>
+                <div v-else class="attachment-placeholder">Unavailable</div>
+
+                <div class="attachment-actions">
+                  <div v-if="deletingAttachment === index" class="confirm-inline">
+                    <span>Delete this image permanently?</span>
+                    <button type="button" class="danger" @click="confirmDeleteAttachment(index)">
+                      Confirm
+                    </button>
+                    <button type="button" @click="deletingAttachment = null">Cancel</button>
+                  </div>
+                  <button
+                    v-else
+                    type="button"
+                    class="reveal"
+                    aria-label="Delete image"
+                    @click="deletingAttachment = index"
+                  >
+                    <Icon name="trash" :size="14" />
+                    Delete
+                  </button>
+                </div>
               </div>
-            </div>
-          </template>
-          <template v-else>
-            <div class="block-header">
-              <span class="block-type">{{ block.type }}</span>
-              <span v-if="block.label" class="block-label">{{ block.label }}</span>
-            </div>
-            <div class="block-value">
-              <span v-if="block.type === 'secret' && !revealed.has(index)" class="masked">••••••••</span>
-              <span v-else class="value-text">{{ block.value }}</span>
-              <span class="block-buttons">
-                <button
-                  v-if="block.type === 'secret'"
-                  type="button"
-                  class="reveal"
-                  @click="toggleReveal(index)"
-                >
-                  {{ revealed.has(index) ? 'Hide' : 'Show' }}
-                </button>
-                <button type="button" class="reveal" @click="copyBlock(index, block.value)">Copy</button>
-              </span>
-            </div>
-            <p v-if="copyStatus[index]" class="copy-status">{{ copyStatus[index] }}</p>
-          </template>
-        </li>
-        <li v-if="!item.payload.content.length" class="empty">No content blocks.</li>
-      </ul>
-    </template>
-  </main>
+            </template>
+            <template v-else>
+              <div class="block-header">
+                <span class="block-type">{{ block.type }}</span>
+                <span v-if="block.label" class="block-label">{{ block.label }}</span>
+              </div>
+              <div class="block-value">
+                <span v-if="block.type === 'secret' && !revealed.has(index)" class="masked">••••••••</span>
+                <span v-else class="value-text">{{ block.value }}</span>
+                <span class="block-buttons">
+                  <button
+                    v-if="block.type === 'secret'"
+                    type="button"
+                    class="reveal"
+                    :aria-label="revealed.has(index) ? 'Hide value' : 'Show value'"
+                    @click="toggleReveal(index)"
+                  >
+                    <Icon :name="revealed.has(index) ? 'eye-off' : 'eye'" :size="14" />
+                    {{ revealed.has(index) ? 'Hide' : 'Show' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="reveal"
+                    aria-label="Copy value"
+                    @click="copyBlock(index, block.value)"
+                  >
+                    <Icon name="copy" :size="14" />
+                    Copy
+                  </button>
+                </span>
+              </div>
+              <p v-if="copyStatus[index]" class="copy-status">{{ copyStatus[index] }}</p>
+            </template>
+          </li>
+        </ul>
+        <EmptyState v-else title="No content blocks" />
+      </template>
+    </div>
+  </AppLayout>
 </template>
 
 <style scoped>
 .item-page {
-  max-width: 40rem;
-  margin: 3rem auto;
-  padding: 0 1.5rem 3rem;
-  font-family: system-ui, sans-serif;
-}
-
-.back-link {
-  color: #3730a3;
-  text-decoration: none;
-  font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
 }
 
 header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.75rem;
-  margin-top: 1rem;
+  gap: var(--space-sm);
 }
 
 h1 {
   margin: 0;
-  font-size: 1.4rem;
+  font-size: var(--font-size-title-lg);
   word-break: break-word;
 }
 
 .category-tag {
-  margin: 0.25rem 0 0;
-  color: #666;
-  font-size: 0.85rem;
+  margin: var(--space-xs) 0 0;
+  color: var(--color-on-surface-variant);
+  font-size: var(--font-size-body-md);
 }
 
 .actions {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-sm);
   flex-shrink: 0;
 }
 
 .button-link {
   padding: 0.4rem 0.8rem;
-  border-radius: 0.5rem;
-  background: #3730a3;
-  color: white;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   text-decoration: none;
-  font-size: 0.85rem;
+  font-size: var(--font-size-label-lg);
+  font-weight: 600;
 }
 
 .danger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   padding: 0.4rem 0.8rem;
-  border: 1px solid #f4b8b8;
-  border-radius: 0.5rem;
-  background: white;
-  color: #c1121f;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-error);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: var(--font-size-label-lg);
 }
 
 .confirm-box {
-  margin-top: 1rem;
-  padding: 1rem;
-  border: 1px solid #f0c36d;
-  background: #fffaeb;
-  border-radius: 0.5rem;
+  padding: var(--space-md);
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-container);
+  border-radius: var(--radius-md);
+  color: var(--color-warning);
 }
 
 .confirm-actions {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
 }
 
 .confirm-actions button:not(.danger) {
   padding: 0.4rem 0.8rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
-  background: white;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   cursor: pointer;
 }
 
 .blocks {
   list-style: none;
-  margin: 1.5rem 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-sm);
 }
 
 .block {
   padding: 0.75rem 0.9rem;
-  border: 1px solid #e4e7ec;
-  border-radius: 0.5rem;
-  background: white;
+  border: 1px solid var(--color-surface-variant);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
 }
 
 .block-header {
   display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
+  gap: var(--space-xs);
+  align-items: center;
   margin-bottom: 0.35rem;
+}
+
+.block-icon {
+  color: var(--color-primary);
 }
 
 .block-type {
   text-transform: uppercase;
-  font-size: 0.7rem;
+  font-size: var(--font-size-label-md);
   font-weight: 700;
-  color: #3730a3;
+  color: var(--color-primary);
   letter-spacing: 0.03em;
 }
 
 .block-label {
-  font-size: 0.85rem;
-  color: #444;
+  font-size: var(--font-size-body-md);
+  color: var(--color-on-surface-variant);
   font-weight: 600;
 }
 
 .block-value {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-sm);
   justify-content: space-between;
 }
 
@@ -393,49 +422,48 @@ h1 {
 
 .masked {
   letter-spacing: 0.15em;
-  color: #444;
+  color: var(--color-on-surface-variant);
 }
 
 .block-buttons {
   display: flex;
-  gap: 0.35rem;
+  gap: var(--space-xs);
   flex-shrink: 0;
 }
 
 .reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.2rem 0.5rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.4rem;
-  background: white;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
   flex-shrink: 0;
 }
 
 .copy-status {
   margin: 0.35rem 0 0;
-  font-size: 0.75rem;
-  color: #1a7f37;
-}
-
-.empty {
-  color: #888;
-  font-size: 0.9rem;
+  font-size: var(--font-size-label-md);
+  color: var(--color-success);
 }
 
 .attachment-card {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-sm);
   flex-wrap: wrap;
 }
 
 .attachment-image {
   max-width: 100%;
   max-height: 320px;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-sm);
   object-fit: contain;
-  background: #f2f4f7;
+  background: var(--color-surface-variant);
 }
 
 .attachment-placeholder {
@@ -444,16 +472,16 @@ h1 {
   justify-content: center;
   width: 160px;
   height: 120px;
-  border-radius: 0.4rem;
-  background: #f2f4f7;
-  color: #888;
-  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-variant);
+  color: var(--color-on-surface-variant);
+  font-size: var(--font-size-label-lg);
   text-align: center;
-  padding: 0.5rem;
+  padding: var(--space-sm);
 }
 
 .attachment-error {
-  color: #c1121f;
+  color: var(--color-error);
 }
 
 .attachment-actions {
@@ -463,38 +491,38 @@ h1 {
 .confirm-inline {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
+  gap: var(--space-sm);
+  font-size: var(--font-size-label-lg);
 }
 
 .confirm-inline .danger {
   padding: 0.3rem 0.6rem;
-  border: 1px solid #f4b8b8;
-  border-radius: 0.4rem;
-  background: white;
-  color: #c1121f;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-error);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
 }
 
 .confirm-inline button:not(.danger) {
   padding: 0.3rem 0.6rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.4rem;
-  background: white;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
 }
 
 .banner {
   padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  font-size: 0.9rem;
-  margin-top: 1rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body-md);
 }
 
 .banner-error {
-  background: #fef3f2;
-  color: #c1121f;
+  background: var(--color-error-container);
+  color: var(--color-on-error-container);
 }
 </style>

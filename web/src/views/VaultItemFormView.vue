@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useVaultStore } from '../stores/vault'
 import { compressImage } from '../services/imageCompressor'
 import type { ContentBlock } from '../types/vault'
+import AppLayout from '../components/AppLayout.vue'
+import LoadingState from '../components/LoadingState.vue'
+import Icon from '../components/Icon.vue'
 
 /**
  * Add/Edit vault item form. Web Sprint 6 adds "image" content blocks
@@ -293,120 +296,142 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <template>
-  <main class="form-page">
-    <RouterLink to="/dashboard" class="back-link">&larr; Home</RouterLink>
+  <AppLayout>
+    <div class="form-page">
+      <h1>{{ isEdit ? 'Edit item' : 'New item' }}</h1>
 
-    <h1>{{ isEdit ? 'Edit item' : 'New item' }}</h1>
+      <LoadingState v-if="loading" full-height />
+      <form v-else @submit.prevent="onSubmit">
+        <p v-if="formError" class="banner banner-error" role="alert">{{ formError }}</p>
 
-    <div v-if="loading">Loading…</div>
-    <form v-else @submit.prevent="onSubmit">
-      <p v-if="formError" class="banner banner-error" role="alert">{{ formError }}</p>
+        <label for="title">Title</label>
+        <input id="title" v-model="title" type="text" required maxlength="200" />
 
-      <label for="title">Title</label>
-      <input id="title" v-model="title" type="text" required maxlength="200" />
-
-      <label for="category">Category</label>
-      <select id="category" v-model.number="categoryId" required>
-        <option v-for="c in vault.categories" :key="c.id" :value="c.id">{{ c.name }}</option>
-      </select>
-
-      <div class="blocks-header">
-        <h2>Content</h2>
-        <button type="button" @click="addBlock">+ Add block</button>
-      </div>
-
-      <div v-for="index in textBlockIndices" :key="index" class="block-editor">
-        <select v-model="content[index].type">
-          <option value="text">Text</option>
-          <option value="secret">Secret</option>
-          <option value="note">Note</option>
+        <label for="category">Category</label>
+        <select id="category" v-model.number="categoryId" required>
+          <option v-for="c in vault.categories" :key="c.id" :value="c.id">{{ c.name }}</option>
         </select>
-        <input v-model="content[index].label" type="text" placeholder="Label (optional)" maxlength="100" />
-        <textarea v-model="content[index].value" placeholder="Value" rows="2"></textarea>
-        <button type="button" class="remove" :disabled="content.length === 1" @click="removeBlock(index)">
-          Remove
-        </button>
-      </div>
 
-      <div class="blocks-header">
-        <h2>Images</h2>
-        <label v-if="!isEdit" class="file-picker-label">
-          + Add image
-          <input type="file" accept="image/*" multiple class="file-picker-input" @change="onPickImages" />
-        </label>
-        <button v-else type="button" :disabled="attachmentBusy" @click="uploadImageNow">
-          {{ attachmentBusy ? 'Uploading…' : '+ Add image' }}
-        </button>
-      </div>
-      <p v-if="attachmentError" class="banner banner-error" role="alert">{{ attachmentError }}</p>
-
-      <!-- Existing (already-uploaded) image blocks -- edit mode only. -->
-      <div v-for="index in imageBlockIndices" :key="`img-${index}`" class="image-block">
-        <img
-          v-if="existingImagePreviews[index]"
-          :src="existingImagePreviews[index]"
-          alt="Attachment preview"
-          class="image-thumb"
-        />
-        <div v-else-if="existingImageLoading[index]" class="image-thumb image-thumb-placeholder">
-          Loading…
+        <div class="blocks-header">
+          <h2>Content</h2>
+          <button type="button" @click="addBlock">
+            <Icon name="plus" :size="14" />
+            Add block
+          </button>
         </div>
-        <div v-else class="image-thumb image-thumb-placeholder">Preview unavailable</div>
 
-        <div v-if="removingAttachment === index" class="confirm-inline">
-          <span>Remove this image permanently?</span>
+        <div v-for="index in textBlockIndices" :key="index" class="block-editor">
+          <select v-model="content[index].type">
+            <option value="text">Text</option>
+            <option value="secret">Secret</option>
+            <option value="note">Note</option>
+          </select>
+          <input v-model="content[index].label" type="text" placeholder="Label (optional)" maxlength="100" />
+          <textarea v-model="content[index].value" placeholder="Value" rows="2"></textarea>
           <button
             type="button"
-            class="danger"
-            :disabled="attachmentBusy"
-            @click="confirmRemoveExistingImage(index)"
+            class="remove"
+            :disabled="content.length === 1"
+            aria-label="Remove block"
+            @click="removeBlock(index)"
           >
-            Confirm
+            <Icon name="trash" :size="14" />
+            Remove
           </button>
-          <button type="button" @click="removingAttachment = null">Cancel</button>
         </div>
-        <button v-else type="button" class="remove" @click="removingAttachment = index">Remove</button>
-      </div>
 
-      <!-- Newly picked, not-yet-uploaded images -- create mode only (uploaded on submit). -->
-      <div v-for="(pending, index) in pendingImages" :key="`pending-${index}`" class="image-block">
-        <img :src="pending.previewUrl" alt="Pending image preview" class="image-thumb" />
-        <button type="button" class="remove" @click="removePendingImage(index)">Remove</button>
-      </div>
+        <div class="blocks-header">
+          <h2>Images</h2>
+          <label v-if="!isEdit" class="file-picker-label">
+            <Icon name="plus" :size="14" />
+            Add image
+            <input type="file" accept="image/*" multiple class="file-picker-input" @change="onPickImages" />
+          </label>
+          <button v-else type="button" :disabled="attachmentBusy" @click="uploadImageNow">
+            <Icon name="plus" :size="14" />
+            {{ attachmentBusy ? 'Uploading…' : 'Add image' }}
+          </button>
+        </div>
+        <p v-if="attachmentError" class="banner banner-error" role="alert">{{ attachmentError }}</p>
 
-      <p v-if="!imageBlockIndices.length && !pendingImages.length" class="empty">No images.</p>
+        <!-- Existing (already-uploaded) image blocks -- edit mode only. -->
+        <div v-for="index in imageBlockIndices" :key="`img-${index}`" class="image-block">
+          <img
+            v-if="existingImagePreviews[index]"
+            :src="existingImagePreviews[index]"
+            alt="Attachment preview"
+            class="image-thumb"
+          />
+          <div v-else-if="existingImageLoading[index]" class="image-thumb image-thumb-placeholder">
+            Loading…
+          </div>
+          <div v-else class="image-thumb image-thumb-placeholder">Preview unavailable</div>
 
-      <button type="submit" class="submit" :disabled="submitting">
-        {{ submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create item' }}
-      </button>
-    </form>
-  </main>
+          <div v-if="removingAttachment === index" class="confirm-inline">
+            <span>Remove this image permanently?</span>
+            <button
+              type="button"
+              class="danger"
+              :disabled="attachmentBusy"
+              @click="confirmRemoveExistingImage(index)"
+            >
+              Confirm
+            </button>
+            <button type="button" @click="removingAttachment = null">Cancel</button>
+          </div>
+          <button
+            v-else
+            type="button"
+            class="remove"
+            aria-label="Remove image"
+            @click="removingAttachment = index"
+          >
+            <Icon name="trash" :size="14" />
+            Remove
+          </button>
+        </div>
+
+        <!-- Newly picked, not-yet-uploaded images -- create mode only (uploaded on submit). -->
+        <div v-for="(pending, index) in pendingImages" :key="`pending-${index}`" class="image-block">
+          <img :src="pending.previewUrl" alt="Pending image preview" class="image-thumb" />
+          <button
+            type="button"
+            class="remove"
+            aria-label="Remove pending image"
+            @click="removePendingImage(index)"
+          >
+            <Icon name="trash" :size="14" />
+            Remove
+          </button>
+        </div>
+
+        <p v-if="!imageBlockIndices.length && !pendingImages.length" class="empty">No images.</p>
+
+        <button type="submit" class="submit" :disabled="submitting">
+          {{ submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Create item' }}
+        </button>
+      </form>
+    </div>
+  </AppLayout>
 </template>
 
 <style scoped>
 .form-page {
-  max-width: 40rem;
-  margin: 3rem auto;
-  padding: 0 1.5rem 3rem;
-  font-family: system-ui, sans-serif;
-}
-
-.back-link {
-  color: #3730a3;
-  text-decoration: none;
-  font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
 h1 {
-  font-size: 1.4rem;
-  margin: 1rem 0 1.5rem;
+  font-size: var(--font-size-title-lg);
+  margin: 0;
 }
 
 label {
   display: block;
-  font-size: 0.85rem;
+  font-size: var(--font-size-label-lg);
   font-weight: 600;
-  margin-top: 1rem;
+  margin-top: var(--space-md);
 }
 
 input,
@@ -414,43 +439,51 @@ select,
 textarea {
   width: 100%;
   padding: 0.55rem 0.7rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
   font-size: 1rem;
   font-family: inherit;
   margin-top: 0.3rem;
   box-sizing: border-box;
+  background: var(--color-surface);
+  color: var(--color-on-surface);
 }
 
 .blocks-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 1.5rem;
+  margin-top: var(--space-lg);
 }
 
 .blocks-header h2 {
-  font-size: 1rem;
+  font-size: var(--font-size-title-md);
   margin: 0;
 }
 
-.blocks-header button {
+.blocks-header button,
+.file-picker-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   padding: 0.35rem 0.7rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
-  background: white;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--font-size-label-md);
+  font-weight: 600;
 }
 
 .block-editor {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.75rem;
-  border: 1px solid #e4e7ec;
-  border-radius: 0.5rem;
-  margin-top: 0.6rem;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-surface-variant);
+  border-radius: var(--radius-md);
+  margin-top: var(--space-sm);
 }
 
 .block-editor select,
@@ -461,13 +494,16 @@ textarea {
 
 .remove {
   align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.3rem 0.6rem;
-  border: 1px solid #f4b8b8;
-  border-radius: 0.4rem;
-  background: white;
-  color: #c1121f;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-error);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
 }
 
 .remove:disabled {
@@ -476,16 +512,8 @@ textarea {
 }
 
 .file-picker-label {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.35rem 0.7rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
-  background: white;
-  cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 600;
   margin-top: 0;
+  position: relative;
 }
 
 .file-picker-input {
@@ -499,19 +527,19 @@ textarea {
 .image-block {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  border: 1px solid #e4e7ec;
-  border-radius: 0.5rem;
-  margin-top: 0.6rem;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--color-surface-variant);
+  border-radius: var(--radius-md);
+  margin-top: var(--space-sm);
 }
 
 .image-thumb {
   width: 96px;
   height: 96px;
   object-fit: cover;
-  border-radius: 0.4rem;
-  background: #f2f4f7;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-variant);
   flex-shrink: 0;
 }
 
@@ -520,45 +548,47 @@ textarea {
   align-items: center;
   justify-content: center;
   text-align: center;
-  font-size: 0.7rem;
-  color: #888;
-  padding: 0.4rem;
+  font-size: var(--font-size-label-md);
+  color: var(--color-on-surface-variant);
+  padding: var(--space-xs);
 }
 
 .confirm-inline {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
+  gap: var(--space-sm);
+  font-size: var(--font-size-label-lg);
 }
 
 .confirm-inline .danger {
   padding: 0.3rem 0.6rem;
-  border: 1px solid #f4b8b8;
-  border-radius: 0.4rem;
-  background: white;
-  color: #c1121f;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-error);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
 }
 
 .confirm-inline button:not(.danger) {
   padding: 0.3rem 0.6rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.4rem;
-  background: white;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--font-size-label-md);
 }
 
 .submit {
-  margin-top: 1.5rem;
+  margin-top: var(--space-lg);
   padding: 0.65rem;
   border: none;
-  border-radius: 0.5rem;
-  background: #3730a3;
-  color: white;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   font-size: 1rem;
+  font-weight: 600;
   cursor: pointer;
   width: 100%;
 }
@@ -570,19 +600,19 @@ textarea {
 
 .banner {
   padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  font-size: 0.9rem;
-  margin-bottom: 1rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body-md);
+  margin-bottom: var(--space-md);
 }
 
 .banner-error {
-  background: #fef3f2;
-  color: #c1121f;
+  background: var(--color-error-container);
+  color: var(--color-on-error-container);
 }
 
 .empty {
-  color: #888;
-  font-size: 0.85rem;
-  margin-top: 0.5rem;
+  color: var(--color-on-surface-variant);
+  font-size: var(--font-size-body-md);
+  margin-top: var(--space-sm);
 }
 </style>

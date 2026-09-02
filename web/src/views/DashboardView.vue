@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
 import { useVaultStore } from '../stores/vault'
 import { filterItems } from '../services/vaultSearch'
+import AppLayout from '../components/AppLayout.vue'
+import EmptyState from '../components/EmptyState.vue'
+import LoadingState from '../components/LoadingState.vue'
+import Icon from '../components/Icon.vue'
 
 /**
  * Home view (Web Sprint 3) -- mirrors Android's Home screen scope
@@ -20,9 +22,7 @@ import { filterItems } from '../services/vaultSearch'
  * filter over `vault.items`, which is already the full decrypted list this
  * view was fetching anyway.
  */
-const auth = useAuthStore()
 const vault = useVaultStore()
-const router = useRouter()
 
 const loading = ref(true)
 const newCategoryName = ref('')
@@ -72,147 +72,126 @@ async function onCreateCategory(): Promise<void> {
     creatingCategory.value = false
   }
 }
-
-async function onLogout(): Promise<void> {
-  await auth.logout()
-  await router.push('/login')
-}
 </script>
 
 <template>
-  <main class="home">
-    <header>
-      <h1>VeilKeeper</h1>
-      <div class="header-actions">
-        <span class="welcome"
-          >Signed in as <strong>{{ auth.email }}</strong></span
-        >
-        <RouterLink to="/settings" class="button-link">Settings</RouterLink>
-        <button type="button" class="logout" @click="onLogout">Log out</button>
+  <AppLayout>
+    <div class="home">
+      <p v-if="vault.errorMessage" class="banner banner-error" role="alert">{{ vault.errorMessage }}</p>
+
+      <div class="search-bar">
+        <Icon name="search" :size="18" class="search-icon" />
+        <input
+          v-model="searchQuery"
+          type="search"
+          placeholder="Search title, labels, notes…"
+          aria-label="Search vault items"
+        />
       </div>
-    </header>
 
-    <p v-if="vault.errorMessage" class="banner banner-error" role="alert">{{ vault.errorMessage }}</p>
+      <LoadingState v-if="loading" full-height />
 
-    <div class="search-bar">
-      <input
-        v-model="searchQuery"
-        type="search"
-        placeholder="Search title, labels, notes…"
-        aria-label="Search vault items"
-      />
-    </div>
-
-    <section v-if="isSearching" class="section">
-      <h2>Search results</h2>
-      <p v-if="loading">Loading…</p>
-      <ul v-else class="item-list">
-        <li v-for="item in searchResults" :key="item.id">
-          <RouterLink :to="`/items/${item.id}`" class="item-row">
-            <span class="item-title">{{ item.payload.title }}</span>
-            <span class="item-category">{{ categoryName(item.categoryId) }}</span>
-          </RouterLink>
-        </li>
-        <li v-if="!searchResults.length" class="empty">No matching items.</li>
-      </ul>
-    </section>
-
-    <template v-else>
-      <section class="section">
-        <div class="section-header">
-          <h2>Categories</h2>
-          <RouterLink to="/items/new" class="button-link">+ New item</RouterLink>
-        </div>
-
-        <form class="new-category-form" @submit.prevent="onCreateCategory">
-          <input v-model="newCategoryName" type="text" placeholder="New category name" maxlength="100" />
-          <button type="submit" :disabled="creatingCategory || !newCategoryName.trim()">Add</button>
-        </form>
-
-        <p v-if="loading">Loading…</p>
-        <ul v-else class="category-list">
-          <li v-for="category in vault.categories" :key="category.id">
-            <RouterLink :to="`/categories/${category.id}`" class="category-card">
-              <span class="category-name">{{ category.name }}</span>
-              <span class="category-count">{{ category.item_count }} item(s)</span>
-            </RouterLink>
-          </li>
-          <li v-if="!vault.categories.length" class="empty">No categories yet.</li>
-        </ul>
-      </section>
-
-      <section class="section">
-        <h2>Recent items</h2>
-        <p v-if="loading">Loading…</p>
-        <ul v-else class="item-list">
-          <li v-for="item in recentItems" :key="item.id">
+      <section v-else-if="isSearching" class="section">
+        <h2>Search results</h2>
+        <ul v-if="searchResults.length" class="item-list">
+          <li v-for="item in searchResults" :key="item.id">
             <RouterLink :to="`/items/${item.id}`" class="item-row">
               <span class="item-title">{{ item.payload.title }}</span>
               <span class="item-category">{{ categoryName(item.categoryId) }}</span>
             </RouterLink>
           </li>
-          <li v-if="!recentItems.length" class="empty">No vault items yet.</li>
         </ul>
+        <EmptyState v-else title="No matching items" message="Try a different title, label, or note text." />
       </section>
-    </template>
-  </main>
+
+      <template v-else>
+        <section class="section">
+          <div class="section-header">
+            <h2>Categories</h2>
+            <RouterLink to="/items/new" class="button-link">
+              <Icon name="plus" :size="16" />
+              New item
+            </RouterLink>
+          </div>
+
+          <form class="new-category-form" @submit.prevent="onCreateCategory">
+            <input v-model="newCategoryName" type="text" placeholder="New category name" maxlength="100" />
+            <button type="submit" :disabled="creatingCategory || !newCategoryName.trim()">Add</button>
+          </form>
+
+          <ul v-if="vault.categories.length" class="category-list">
+            <li v-for="category in vault.categories" :key="category.id">
+              <RouterLink :to="`/categories/${category.id}`" class="category-card">
+                <span class="category-name">{{ category.name }}</span>
+                <span class="category-count">{{ category.item_count }} item(s)</span>
+              </RouterLink>
+            </li>
+          </ul>
+          <EmptyState
+            v-else
+            title="No categories yet"
+            message="Categories help you organize your vault -- add your first one above."
+          />
+        </section>
+
+        <section class="section">
+          <h2>Recent items</h2>
+          <ul v-if="recentItems.length" class="item-list">
+            <li v-for="item in recentItems" :key="item.id">
+              <RouterLink :to="`/items/${item.id}`" class="item-row">
+                <span class="item-title">{{ item.payload.title }}</span>
+                <span class="item-category">{{ categoryName(item.categoryId) }}</span>
+              </RouterLink>
+            </li>
+          </ul>
+          <EmptyState
+            v-else
+            title="No vault items yet"
+            message="Create your first secret, note, or credential."
+            action-label="+ New item"
+            @action="$router.push('/items/new')"
+          />
+        </section>
+      </template>
+    </div>
+  </AppLayout>
 </template>
 
 <style scoped>
 .home {
-  max-width: 40rem;
-  margin: 3rem auto;
-  padding: 0 1.5rem 3rem;
-  font-family: system-ui, sans-serif;
-}
-
-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-h1 {
-  margin: 0;
-  font-size: 1.5rem;
-}
-
-.welcome {
-  font-size: 0.9rem;
-  color: #444;
-}
-
-.logout {
-  padding: 0.5rem 1rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
-  background: white;
-  cursor: pointer;
+  flex-direction: column;
+  gap: var(--space-lg);
 }
 
 .search-bar {
-  margin-top: 1.25rem;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 0.75rem;
+  color: var(--color-on-surface-variant);
+  pointer-events: none;
 }
 
 .search-bar input {
   width: 100%;
-  padding: 0.6rem 0.9rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
-  font-size: 0.95rem;
+  padding: 0.6rem 0.9rem 0.6rem 2.5rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body-lg);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
   box-sizing: border-box;
 }
 
 .section {
-  margin-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
 }
 
 .section-header {
@@ -222,38 +201,44 @@ h1 {
 }
 
 h2 {
-  font-size: 1.1rem;
+  font-size: var(--font-size-title-md);
   margin: 0;
 }
 
 .button-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   padding: 0.4rem 0.8rem;
-  border-radius: 0.5rem;
-  background: #3730a3;
-  color: white;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   text-decoration: none;
-  font-size: 0.85rem;
+  font-size: var(--font-size-label-lg);
+  font-weight: 600;
 }
 
 .new-category-form {
   display: flex;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
+  gap: var(--space-sm);
 }
 
 .new-category-form input {
   flex: 1;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d0d5dd;
-  border-radius: 0.5rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
 }
 
 .new-category-form button {
   padding: 0.5rem 1rem;
   border: none;
-  border-radius: 0.5rem;
-  background: #3730a3;
-  color: white;
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -265,11 +250,11 @@ h2 {
 .category-list,
 .item-list {
   list-style: none;
-  margin: 0.75rem 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-sm);
 }
 
 .category-card,
@@ -277,34 +262,32 @@ h2 {
   display: flex;
   justify-content: space-between;
   padding: 0.65rem 0.9rem;
-  border: 1px solid #e4e7ec;
-  border-radius: 0.5rem;
+  border: 1px solid var(--color-surface-variant);
+  border-radius: var(--radius-md);
   text-decoration: none;
   color: inherit;
-  background: white;
+  background: var(--color-surface);
+}
+
+.category-card:hover,
+.item-row:hover {
+  border-color: var(--color-primary);
 }
 
 .category-count,
 .item-category {
-  color: #666;
-  font-size: 0.85rem;
-}
-
-.empty {
-  color: #888;
-  font-size: 0.9rem;
-  padding: 0.5rem 0;
+  color: var(--color-on-surface-variant);
+  font-size: var(--font-size-body-md);
 }
 
 .banner {
   padding: 0.6rem 0.75rem;
-  border-radius: 0.5rem;
-  font-size: 0.9rem;
-  margin-top: 1rem;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-body-md);
 }
 
 .banner-error {
-  background: #fef3f2;
-  color: #c1121f;
+  background: var(--color-error-container);
+  color: var(--color-on-error-container);
 }
 </style>

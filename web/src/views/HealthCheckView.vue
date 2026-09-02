@@ -13,7 +13,7 @@ onMounted(() => {
 <template>
   <main class="health-check">
     <h1>VeilKeeper Web</h1>
-    <p class="subtitle">Sprint 1 scaffold -- backend connectivity check</p>
+    <p class="subtitle">Backend connectivity check</p>
 
     <dl>
       <dt>API base URL</dt>
@@ -31,19 +31,18 @@ onMounted(() => {
 <style scoped>
 .health-check {
   max-width: 32rem;
-  margin: 4rem auto;
-  padding: 0 1rem;
-  font-family: system-ui, sans-serif;
+  margin: var(--space-xxl) auto;
+  padding: 0 var(--space-md);
 }
 
 .subtitle {
-  color: #666;
+  color: var(--color-on-surface-variant);
 }
 
 dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.5rem 1rem;
+  gap: var(--space-sm) var(--space-md);
 }
 
 dt {
@@ -51,18 +50,29 @@ dt {
 }
 
 .status.ok {
-  color: #1a7f37;
+  color: var(--color-success);
 }
 
 .status.error {
-  color: #c1121f;
+  color: var(--color-error);
 }
 
 .status.checking {
-  color: #9a6700;
+  color: var(--color-warning);
 }
 
 button {
-  margin-top: 1.5rem;
+  margin-top: var(--space-lg);
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--color-outline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-on-surface);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 </style>

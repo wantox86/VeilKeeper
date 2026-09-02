@@ -1,7 +1,204 @@
+/**
+ * "Midnight Vault" design tokens (Web Sprint 7 -- UI Polish).
+ *
+ * Values copied 1:1 from the Android client's own palette
+ * (`android/app/src/main/java/id/quezacolt/veilkeeper/ui/theme/Color.kt`) so
+ * the Web app reads as "the same product" rather than a reskin -- see that
+ * file's own doc comment for the *why* behind the palette (indigo primary +
+ * a restrained violet accent, chosen over "hacker green"/teal to read calm
+ * and premium rather than alarm-toned).
+ *
+ * Light tokens live on `:root`; a `prefers-color-scheme: dark` block
+ * overrides them. No manual light/dark toggle -- Android doesn't have one
+ * either (`Theme.kt`'s `VeilKeeperTheme` always follows
+ * `isSystemInDarkTheme()`), so following the OS/browser preference here
+ * keeps the two clients' dark-mode *behavior* consistent, not just their
+ * colors, per this sprint's brief ("pick whichever is simpler & consistent
+ * with Android's behavior").
+ */
 :root {
   color-scheme: light dark;
+
+  /* Primary (indigo) */
+  --color-primary: #4a55d6;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #e0e0ff;
+  --color-on-primary-container: #0e1257;
+
+  /* Secondary (neutral slate, used for low-emphasis controls) */
+  --color-secondary: #5b6472;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #dfe2ec;
+  --color-on-secondary-container: #181e29;
+
+  /* Tertiary (violet accent -- used sparingly, e.g. the brand mark) */
+  --color-tertiary: #7a5af8;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #e9ddff;
+  --color-on-tertiary-container: #260469;
+
+  /* Surfaces */
+  --color-background: #f8f8fc;
+  --color-on-background: #1b1c21;
+  --color-surface: #ffffff;
+  --color-on-surface: #1b1c21;
+  --color-surface-variant: #e4e5f0;
+  --color-on-surface-variant: #46474f;
+  --color-surface-container: #f0f0f7;
+  --color-outline: #767680;
+
+  /* Error */
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #410002;
+
+  /*
+   * "Success" isn't part of Android's Material 3 color scheme (M3 has no
+   * built-in success role), but both clients need one for
+   * confirmation/copy-succeeded feedback -- Android's own screens reach for
+   * a plain green ad hoc where needed. Defined once here as a token instead
+   * of every view hardcoding its own green, documented as a Web-only visual
+   * decision (no crypto/architecture impact, SPEC-BASE.md Section 56 Rule
+   * 2 -- made directly rather than stopped-and-asked).
+   */
+  --color-success: #1a7f37;
+  --color-success-container: #ecfdf3;
+
+  /* Same reasoning as --color-success above -- M3 has no "warning" role.
+     Used for non-error cautionary banners (destructive-confirm boxes,
+     the "you cannot recover your password" disclosure) so they read
+     distinctly from both errors (red) and the tertiary brand accent
+     (violet), instead of overloading tertiary for "caution". */
+  --color-warning: #7a4d00;
+  --color-warning-container: #fff3d6;
+  --color-warning-border: #e7b34f;
+
+  /* Spacing scale -- mirrors Android's Spacing.kt (4/8/16/24/32/48) 1:1. */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-xxl: 3rem;
+
+  /* Corner radius -- restrained per Section 27 ("avoid excessive rounded cards"). */
+  --radius-sm: 0.4rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Typography scale -- idiomatic web sizing inspired by Android's
+     Type.kt overrides (semibold headline/title, regular body with slightly
+     open line-height), not a literal dp->px port. */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-size-headline: 1.75rem; /* headlineMedium */
+  --font-size-title-lg: 1.375rem; /* titleLarge */
+  --font-size-title-md: 1rem; /* titleMedium */
+  --font-size-title-sm: 0.875rem; /* titleSmall */
+  --font-size-body-lg: 1rem; /* bodyLarge */
+  --font-size-body-md: 0.875rem; /* bodyMedium */
+  --font-size-label-lg: 0.875rem; /* labelLarge */
+  --font-size-label-md: 0.75rem; /* labelMedium */
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-primary: #bcc2ff;
+    --color-on-primary: #1a2170;
+    --color-primary-container: #333c9e;
+    --color-on-primary-container: #e0e0ff;
+
+    --color-secondary: #c3c6d6;
+    --color-on-secondary: #2c333f;
+    --color-secondary-container: #434b58;
+    --color-on-secondary-container: #dfe2ec;
+
+    --color-tertiary: #cfbbff;
+    --color-on-tertiary: #3e1f91;
+    --color-tertiary-container: #5636a8;
+    --color-on-tertiary-container: #e9ddff;
+
+    --color-background: #121318;
+    --color-on-background: #e4e2e9;
+    --color-surface: #121318;
+    --color-on-surface: #e4e2e9;
+    --color-surface-variant: #46474f;
+    --color-on-surface-variant: #c7c6d0;
+    --color-surface-container: #1d1e25;
+    --color-outline: #90909a;
+
+    --color-error: #ffb4ab;
+    --color-on-error: #690005;
+    --color-error-container: #93000a;
+    --color-on-error-container: #ffdad6;
+
+    --color-success: #79d99a;
+    --color-success-container: #123322;
+
+    --color-warning: #f5c876;
+    --color-warning-container: #3d2f0c;
+    --color-warning-border: #7a5a1a;
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
 }
 
 body {
-  margin: 0;
+  background: var(--color-background);
+  color: var(--color-on-background);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body-lg);
+  line-height: 1.5;
+  /* Section 27 "subtle animation" -- a short, cheap color-scheme cross-fade
+     so a system theme flip (or navigating between light/dark-styled routes)
+     never looks like a jarring flash. Nothing else in this app animates by
+     default, per this sprint's brief against flashy motion. */
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+a {
+  color: var(--color-primary);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* Accessibility: a single, consistent visible focus ring for keyboard
+   navigation (Section 6 of this sprint's brief) instead of relying on each
+   browser's inconsistent default outline. `:focus-visible` keeps it from
+   showing on mouse clicks. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
