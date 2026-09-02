@@ -94,5 +94,37 @@ services:
         reservations:
           memory: 128M
 
+  # Web Sprint 8 -- static Vue SPA build served by nginx. LAN-ONLY by
+  # policy (CLAUDE.md "Web client (Sprint roadmap)"): this service must
+  # NEVER be added to ~/.cloudflared/config.yml or otherwise exposed
+  # publicly, unlike `api` above which is deliberately public. Only reachable
+  # via http://<MACMINI-LAN-IP>:18092 from devices on the local network.
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        # Points at the live public backend -- the Web app itself is
+        # LAN-only, but it still calls the same real backend Android uses
+        # (there is no separate "LAN backend"). See CLAUDE.md.
+        VITE_API_BASE_URL: https://veilkeeper.quezacolt.my.id/
+    container_name: veilkeeper-web
+    restart: unless-stopped
+    ports:
+      # Host port 18092 -- not 80 (taken by beacon_frontend on this same
+      # MACMINI host), not 18091/18080 (this repo's own API / the Qoder
+      # build's API). Verified free via `docker ps` before picking it.
+      - "18092:8080"
+    # Static nginx serving pre-built files -- no dependency on api/mysql
+    # at the container level (the SPA calls the live public backend
+    # directly from the browser, not through this container).
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+        reservations:
+          memory: 16M
+
 volumes:
   veilkeeper-mysql-data:

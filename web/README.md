@@ -4,10 +4,13 @@ Web client for VeilKeeper (Vue 3 + TypeScript + Vite). See the repo root
 [`CLAUDE.md`](../CLAUDE.md) for the full product context, resolved design
 decisions, and the Web sprint roadmap.
 
-**Sprint 4 status: Secure UX.** Auth (Sprint 2), vault CRUD (Sprint 3), and
-now secret visibility/clipboard security/session lock (Sprint 4, see
-"Secure UX (Sprint 4)" below) are all implemented and wired to the real
-backend API.
+**Status: all 8 Web sprints delivered** (scaffold+crypto, auth, vault CRUD,
+secure UX, search, attachments, UI polish, and homelab deployment). See
+root [`CLAUDE.md`](../CLAUDE.md#web-client-sprint-roadmap-separate-from-the-8-android-sprints-above)
+for the full sprint-by-sprint history. **Sprint 8 (deployment) has a
+disclosed, unresolved blocker for real multi-device LAN use** -- read
+"Deployment (Sprint 8)" below before assuming `http://<LAN-IP>:18092` works
+from a phone or another computer, because as shipped it does not.
 
 ## Requirements
 
@@ -269,3 +272,81 @@ Auto-lock timeout (Immediately/1/5/15 min) and clipboard clear delay
 (non-secret, same category as `services/device.ts`'s device id), plus
 "Lock now" and "Log out" buttons. Deliberately minimal, no
 theme/profile/biometric settings (no Web biometric equivalent exists).
+
+## Deployment (Sprint 8)
+
+`web/Dockerfile` is a two-stage build: `node:22-alpine` runs `npm ci` (which
+also runs the `argon2-browser` `patch-package` postinstall step, see
+"A required upstream patch" above) + `npm run build`, then the static
+`dist/` output is copied into `nginxinc/nginx-unprivileged:1.27-alpine`
+(non-root by default, no manual UID/permission wrangling needed) serving on
+port 8080 internally, with an SPA fallback (`try_files ... /index.html`) for
+`vue-router`'s history mode -- see `web/web.nginx.conf`.
+
+`VITE_API_BASE_URL` is a **build-time** arg (`ARG`/`ENV` in the Dockerfile),
+not a runtime env var -- Vite inlines `VITE_*` vars into the static bundle
+at `npm run build` time, so there is no way to change it after the image is
+built without rebuilding. The root `docker-compose.yml`'s `web` service
+build args point it at the live public backend
+(`https://veilkeeper.quezacolt.my.id/`), same as every real client of this
+API (Android, and this Web app whenever it's actually used) -- there is no
+separate "LAN-only backend," only a LAN-only *frontend* that still talks to
+the one real backend.
+
+Registered as the `web` service in the root `docker-compose.yml`
+(`docker compose up -d --build web`), host port **18092** (not 80 --
+`beacon_frontend` on the same MACMINI host; not 18091/18080 -- this
+project's own API / the Qoder build's API), `restart: unless-stopped`,
+light resource limits (0.5 CPU / 64M, measured actual idle usage ~12MiB).
+**LAN-only by explicit policy** -- this service must never be added to
+`~/.cloudflared/config.yml` or otherwise exposed publicly (unlike the
+Android app and backend, which are deliberately public); it is reachable
+only as `http://<MACMINI-LAN-IP>:18092` from devices on the same local
+network. See root `README.md` for the equivalent user-facing summary.
+
+### Disclosed blocker: LAN access over plain HTTP breaks all crypto for non-host devices
+
+**Confirmed with a real headless browser (Playwright/Chromium) against the
+actual deployed container** (`http://192.168.50.131:18092`, not `npm run
+dev`): the Web Crypto API (`crypto.subtle`, used throughout
+`src/crypto/hkdf.ts` and `src/crypto/aesGcm.ts`) is only available in a
+[secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+-- `https:`, or an origin the spec special-cases as "potentially
+trustworthy" (`localhost`, `127.0.0.1`, `[::1]`). A plain private-network IP
+like `192.168.50.131` served over plain `http://` is **not** a secure
+context in any current browser. Verified directly:
+
+```js
+// via Playwright, page.goto('http://192.168.50.131:18092/register')
+await page.evaluate(() => window.isSecureContext) // -> false
+await page.evaluate(() => typeof window.crypto.subtle) // -> "undefined"
+```
+
+The practical effect: the Register page's connectivity/liveness bits work
+fine (plain `fetch`, no crypto involved), but clicking "Create account"
+throws `Cannot read properties of undefined (reading 'importKey')` and
+registration never completes -- and the same would happen for Login and any
+vault item encrypt/decrypt, since they all go through the same
+`crypto.subtle` calls. **This means the deployed Web app is currently
+unusable for its stated purpose (register/login/vault CRUD) from any
+device other than the MACMINI itself** (where `http://localhost:18092`
+*is* a secure context and everything works -- confirmed separately: same
+Playwright check on `localhost:18092` returns `isSecureContext: true` and
+a working `crypto.subtle` object). Accessing via `http://127.0.0.1:18092`
+from the MACMINI's own browser would work the same way; accessing via the
+MACMINI's LAN IP from a phone or another computer would not.
+
+This is a browser-platform constraint, not a bug in this repo's code, and
+not something the CORS fix or any application-level change can work around
+-- fixing it means terminating TLS somewhere in front of `web` (e.g. a
+self-signed certificate baked into `web.nginx.conf` itself, no separate
+reverse-proxy service needed), which every device visiting the LAN URL
+would then need to manually trust (a certificate-warning click-through, or
+importing the cert, on every browser/device) since there's no real DNS
+name a public CA could issue for a private IP. That's a real UX/security
+trade-off decision (self-signed cert distribution/trust, plus a rotation
+story), not a small tweak -- **deliberately left unresolved and reported
+here rather than decided unilaterally**, per this project's "stop and ask
+on ambiguous decisions" principle. Until it's resolved, treat this
+deployment as verified-working-from-the-host-only; do not tell end users
+it works from their phone.

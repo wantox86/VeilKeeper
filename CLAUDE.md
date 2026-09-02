@@ -837,12 +837,16 @@ unverified work across the whole project, called out consistently sprint over sp
 than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
-below for its own tracking. Web Sprint 6 (Attachments) is complete as of the most recent
-commit touching `web/`; Android/backend are unaffected by Web sprints themselves, though the
-backend did get a small, carefully-verified CORS middleware addition just before Web Sprint 2
-(see "Backend CORS fix" above) since Web Sprint 2 needed working cross-origin requests to
-function at all. Web Sprints 4, 5, and 6 all needed **no** backend changes at all -- Sprint 6's
-attachment endpoints already existed from Android Sprint 5.
+below for its own tracking. **All 8 Web sprints are now complete** as of the most recent commit
+touching `web/`, including Sprint 8 (homelab deployment) -- though Sprint 8 has one disclosed,
+unresolved blocker (browser secure-context requirements break vault crypto when the deployed
+Web app is accessed from any device other than the host itself; see the Web Sprint 8 entry
+below). Android/backend are unaffected by Web sprints themselves, though the backend did get two
+small, carefully-verified CORS middleware/config changes: one just before Web Sprint 2 (see
+"Backend CORS fix" above, adding CORS middleware itself) since Web Sprint 2 needed working
+cross-origin requests to function at all, and one during Web Sprint 8 (adding the LAN deployment
+origin to the existing allowlist). Web Sprints 4, 5, and 6 all needed **no** backend changes at
+all -- Sprint 6's attachment endpoints already existed from Android Sprint 5.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -874,7 +878,9 @@ Planned roadmap (subject to revision as sprints land):
   backend. Complete, see below.
 - **Sprint 6** — attachments (mirrors Android Sprint 5). Complete, see below.
 - **Sprint 7** — UI polish (mirrors Android Sprint 6). Complete, see below.
-- **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
+- **Sprint 8** — internal/LAN-only deployment (see policy note above). Infrastructure complete
+  (Docker service, CORS, resource/restart verification), but with one disclosed blocker left
+  unresolved -- see below.
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
 
@@ -1774,3 +1780,97 @@ and one new layout shell.
   verification, none of which are part of rtk's git/gh/docker-focused rewrite set the same way
   `git status`/`git log` are -- used directly, consistent with every prior Web sprint's disclosed
   fallback pattern.
+
+### Web Sprint 8 (Homelab deployment) — infrastructure complete, one disclosed blocker left open
+
+The final planned Web sprint. Builds and deploys `web/` as a Docker service alongside `api`/
+`mysql` in this repo's single `docker-compose.yml`, per the LAN-only policy stated at the top of
+this "Web client" section. **Everything about the deployment mechanics themselves is done and
+verified; the one thing not resolved is a browser-platform constraint that blocks the deployed
+app's actual crypto functionality for anyone accessing it from a device other than the host --
+see below, reported rather than silently worked around.**
+
+- `web/Dockerfile` (multi-stage, mirrors `backend/Dockerfile`'s pattern): `node:22-alpine`
+  builder (`npm ci` including the `argon2-browser` `patch-package` postinstall step, then
+  `npm run build`) -> `nginxinc/nginx-unprivileged:1.27-alpine` runtime (non-root by default,
+  no manual UID/permission setup needed, unlike hand-rolling non-root on plain `nginx:alpine`)
+  serving the static `dist/` output on port 8080 internally. `web/web.nginx.conf`: SPA fallback
+  (`try_files $uri $uri/ /index.html`) for `vue-router`'s history mode, long-cache headers for
+  Vite's content-hashed `/assets/`. `VITE_API_BASE_URL` is a Dockerfile `ARG`/`ENV` (Vite bakes
+  `VITE_*` vars into the static bundle at build time -- there is no runtime env injection for a
+  static nginx serve), defaulted to the live public backend
+  (`https://veilkeeper.quezacolt.my.id/`) since that's the one real backend every client
+  (Android, and this Web app) actually talks to.
+- Root `docker-compose.yml`: new `web` service, `container_name: veilkeeper-web`, host port
+  **18092** (checked against a full `docker ps` across every container on this MACMINI host
+  first -- not 80/8080/8081/8083/8085/8090/18080/18091/3306/3308/5432/5000, all already taken by
+  other stacks; see the compose file's own comment). `restart: unless-stopped`, light resource
+  limits (0.5 CPU / 64M limit, 16M reservation). No `depends_on`/network coupling to `api`/
+  `mysql` at the container level -- the SPA calls the live public backend directly from the
+  browser, not through this container. **Explicit LAN-only enforcement**: `~/.cloudflared/
+  config.yml` was not touched at all this sprint (verified by not editing it, and by `web`
+  having zero relation to any tunnel-facing service) -- confirmed via `docker ps` there is no
+  path from the public internet to `veilkeeper-web`.
+- **Backend CORS updated again** (`CORS_ALLOWED_ORIGINS` in the production `.env`, same pattern
+  as the pre-Sprint-2 CORS fix above): added `http://192.168.50.131:18092` (this repo's LAN
+  deployment origin) alongside the existing Vite-dev-server origins. No other secret
+  (`SERVER_PEPPER`/`DB_PASSWORD`/`DB_ROOT_PASSWORD`) touched or regenerated. Applied via
+  `docker compose up -d --build api` (which, same documented Compose behavior as the earlier CORS
+  fix, recreated `veilkeeper-mysql` too since `.env` itself changed -- harmless, the named volume
+  survives a recreate). **Verified against the live backend, not assumed**: `/health`/`/ready`
+  both responded normally within seconds of the restart; a real `curl` register (`user_id: 40`)
+  proved users 1-39 survived the mysql container recreate intact; wrong-key login (401), correct
+  login (200) behaved identically to before; a preflight `OPTIONS` with
+  `Origin: http://192.168.50.131:18092` now returns the CORS headers, while
+  `Origin: https://evil.example.com` still gets none -- confirming the new origin is allowlisted
+  without loosening anything.
+- **Verified with `docker ps`/`docker stats`/a real restart**: zero port/name collision with the
+  Qoder `vk-sprint3-*` stack or any other container on the host (23 containers total, unaffected);
+  `veilkeeper-web` idle RSS measured at **~12 MiB** against its 64M limit (18.5%) -- confirms this
+  really is lightweight static file serving, not just claimed to be; `docker restart
+  veilkeeper-web` followed by an immediate `curl` confirmed it comes back serving `200` within
+  seconds (restart-recovery holds).
+- **Disclosed, unresolved blocker -- confirmed with a real headless browser (Playwright/
+  Chromium) against the actual deployed container, not `npm run dev`**: the Web Crypto API
+  (`crypto.subtle`, used throughout `src/crypto/hkdf.ts`/`src/crypto/aesGcm.ts`, i.e. every
+  key-derivation and encrypt/decrypt step this whole app depends on) is only available in a
+  browser [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+  -- `https:`, or the spec's special-cased `localhost`/`127.0.0.1`/`[::1]`. A plain private LAN
+  IP served over `http://` (exactly `http://192.168.50.131:18092`, the URL this sprint's own task
+  says to document for LAN access) is **not** a secure context in any current browser. Verified
+  directly via Playwright: `window.isSecureContext` is `false` and `typeof
+  window.crypto.subtle` is `"undefined"` when the page is loaded from the LAN IP, vs. `true`/
+  `"object"` when loaded as `http://localhost:18092` from the host itself. Practically: the
+  Register page's plain connectivity works over the LAN IP (no crypto involved), but clicking
+  "Create account" throws `Cannot read properties of undefined (reading 'importKey')` and never
+  completes -- the same failure would hit Login and every vault item encrypt/decrypt, since they
+  all go through the same `crypto.subtle` calls. **This means register/login/vault CRUD only
+  work when the Web app is opened from the MACMINI itself** (`http://localhost:18092` or
+  `http://127.0.0.1:18092`); opening the same LAN URL from a phone or another computer loads the
+  page but every crypto-dependent action fails. This is a browser-platform constraint, not an
+  application bug, and not something a CORS change or any other application-level fix touches --
+  resolving it means terminating TLS somewhere in front of `web` (e.g. a self-signed certificate
+  baked directly into `web.nginx.conf`, no separate reverse-proxy service required), which every
+  device visiting the LAN URL would then need to manually trust (no real DNS name exists for a
+  public CA to issue a cert for a private IP). That's a real trade-off decision (self-signed
+  cert distribution/trust UX, a rotation story) rather than a small tweak, so it was **not
+  decided unilaterally this sprint** -- reported here per SPEC-BASE.md Section 56 Rule 2 /
+  this project's established "stop and ask on ambiguous decisions" principle, exactly the way
+  Web Sprint 1's CORS blocker was reported rather than silently worked around. Both `README.md`
+  and `web/README.md` document this prominently (not buried) so nobody assumes phone/other-device
+  LAN access works before this is resolved.
+- Full end-to-end verification performed against the deployed container (not dev server):
+  `GET /health`/`GET /ready` on the live backend before and after the CORS-triggered restart;
+  the Web health-check page loaded via the LAN origin (`http://192.168.50.131:18092/health`)
+  shows `Status: ok` with zero console errors, proving the CORS fix and the deployed container
+  both work correctly for non-crypto requests; a full register -> create category -> create
+  vault item flow could not be completed end-to-end via the LAN IP because of the secure-context
+  blocker above (this is the blocker being reported, not a gap in verification effort -- the
+  same flow works when the identical container is accessed via `http://localhost:18092`, which
+  isolates the failure to the secure-context requirement rather than any code path this sprint
+  touched).
+- No Web CI workflow added this sprint (still optional per the roadmap intro's CI policy; this
+  sprint touched no CI-relevant config). `rtk` (v0.43.0) confirmed working at the start of this
+  sprint; `docker`/`docker compose` commands were run through `rtk docker ...` per this repo's
+  tooling convention, `curl`/`node <playwright script>` used directly for verification (not part
+  of rtk's rewrite set), consistent with every prior sprint's disclosed pattern.

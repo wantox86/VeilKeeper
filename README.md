@@ -8,9 +8,12 @@ manager). Client-side (zero-knowledge) encrypted vault items, Go backend, MySQL,
 > implementation of the same spec ("Veil Keepers"). See [`CLAUDE.md`](./CLAUDE.md) for
 > resolved design decisions and current sprint status.
 
-**Status:** All 8 planned sprints (0-7) complete — full auth + vault CRUD + categories +
+**Status:** All 8 planned Android sprints (0-7) complete — full auth + vault CRUD + categories +
 attachments + secure UX (auto-lock/biometric/clipboard/screenshot protection) + search + UI
-polish + homelab deployment hardening. See [`CLAUDE.md`](./CLAUDE.md#current-state) for the
+polish + homelab deployment hardening. A separate 8-sprint Web client (`web/`, Vue 3) is also
+fully built and deployed (see "Web app" below) — its final deployment sprint surfaced one
+disclosed, unresolved blocker (LAN access needs HTTPS for the app's crypto to work from any
+device other than the host itself). See [`CLAUDE.md`](./CLAUDE.md#current-state) for the
 full history and final project summary.
 
 ## Repository structure
@@ -18,6 +21,7 @@ full history and final project summary.
 ```text
 backend/    Go API (auth, vault CRUD, categories, attachments)
 android/    Kotlin + Jetpack Compose + Material 3 app
+web/        Vue 3 + TypeScript web client (LAN-only deployment, see below)
 infra/      MySQL init scripts mounted into the mysql container
 data/       Local bind-mount for encrypted attachment storage (gitignored contents)
 docs/       Architecture / security / API docs (grows with later sprints)
@@ -144,6 +148,34 @@ go test ./...
 gofmt -l .
 go vet ./...
 ```
+
+## Web app
+
+`web/` (Vue 3 + TypeScript + Vite) is a static single-page app, built into a
+Docker image (`web/Dockerfile`) and run as the `web` service in this same
+`docker-compose.yml` (`docker compose up -d --build web`). **Deliberately
+LAN-only** -- unlike the Android app and backend above, it is never
+registered with this host's `cloudflared` tunnel or exposed publicly.
+
+```bash
+docker compose up -d --build web
+curl http://localhost:18092/   # served by nginx, host port 18092
+```
+
+Nominally reachable from any device on the same local network at
+`http://<MACMINI-LAN-IP>:18092` (e.g. `http://192.168.50.131:18092`) --
+**but read `web/README.md`'s "Deployment (Sprint 8)" section before relying
+on that**: browsers only expose the Web Crypto API (`crypto.subtle`, which
+this app's whole encryption path depends on) in a *secure context*
+(`https:`, or `localhost`/`127.0.0.1`), and a plain-HTTP LAN IP does not
+qualify. As verified with a real headless browser against this exact
+deployed container, that means **register/login/vault CRUD currently only
+work when accessed from the MACMINI itself** (`http://localhost:18092`);
+accessing the same URL from a phone or another computer on the LAN loads
+the page but every crypto operation throws and the app is unusable there.
+This is a disclosed, unresolved blocker (needs a TLS decision), not
+something silently worked around -- see `web/README.md` for the full
+writeup and options.
 
 ## Android app
 
