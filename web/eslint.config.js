@@ -15,6 +15,19 @@ export default tseslint.config(
         parser: tseslint.parser,
       },
     },
+    rules: {
+      // Same reasoning typescript-eslint's own recommended config already
+      // applies to plain .ts/.tsx files (disabling core `no-undef` there):
+      // TypeScript itself (via `vue-tsc -b`, part of `npm run build`)
+      // already catches genuinely undefined identifiers with full type
+      // awareness, and core ESLint's no-undef doesn't know about ambient
+      // browser globals (`setTimeout`/`clearTimeout`/`window`/etc.) inside
+      // a `.vue` SFC's `<script setup>` block the way it apparently does
+      // for `.ts` files under this config -- without this, using any
+      // browser global directly in a component (e.g. this sprint's
+      // clipboard-copy status timers) is a false positive, not a real bug.
+      'no-undef': 'off',
+    },
   },
   {
     rules: {

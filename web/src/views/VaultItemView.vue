@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useVaultStore, type DecryptedVaultItem } from '../stores/vault'
+import { useSettingsStore } from '../stores/settings'
+import { copyToClipboard } from '../crypto/clipboard'
 
 const route = useRoute()
 const router = useRouter()
 const vault = useVaultStore()
+const settings = useSettingsStore()
 
 const itemId = computed(() => Number(route.params.id))
 const item = ref<DecryptedVaultItem | null>(null)
@@ -14,6 +17,39 @@ const loadError = ref<string | null>(null)
 const revealed = ref<Set<number>>(new Set())
 const deleting = ref(false)
 const showDeleteConfirm = ref(false)
+const copyStatus = ref<Record<number, string>>({})
+const copyStatusTimers: Record<number, ReturnType<typeof setTimeout>> = {}
+
+/**
+ * Clipboard Security (SPEC-BASE.md Section 29): every content block gets a
+ * Copy button, not just `type === "secret"` -- everything in this vault is
+ * sensitive, same reasoning Android's `ClipboardSecurity` wiring doc
+ * comment gives. Never logs `block.value` anywhere, only a generic
+ * feedback string derived from `copyToClipboard`'s boolean/string result
+ * (see `crypto/clipboard.ts` for the real Clipboard API limitation this
+ * result reflects).
+ */
+async function copyBlock(index: number, value: string): Promise<void> {
+  const result = await copyToClipboard(value, settings.clipboardClearDelayMs)
+  copyStatus.value = {
+    ...copyStatus.value,
+    [index]: result.copied
+      ? result.clearScheduled
+        ? 'Copied (clears automatically while this tab stays focused)'
+        : 'Copied'
+      : (result.error ?? 'Copy failed'),
+  }
+  if (copyStatusTimers[index]) clearTimeout(copyStatusTimers[index])
+  copyStatusTimers[index] = setTimeout(() => {
+    const next = { ...copyStatus.value }
+    delete next[index]
+    copyStatus.value = next
+  }, 4000)
+}
+
+onBeforeUnmount(() => {
+  for (const timer of Object.values(copyStatusTimers)) clearTimeout(timer)
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -99,10 +135,19 @@ async function confirmDelete(): Promise<void> {
           <div class="block-value">
             <span v-if="block.type === 'secret' && !revealed.has(index)" class="masked">••••••••</span>
             <span v-else class="value-text">{{ block.value }}</span>
-            <button v-if="block.type === 'secret'" type="button" class="reveal" @click="toggleReveal(index)">
-              {{ revealed.has(index) ? 'Hide' : 'Reveal' }}
-            </button>
+            <span class="block-buttons">
+              <button
+                v-if="block.type === 'secret'"
+                type="button"
+                class="reveal"
+                @click="toggleReveal(index)"
+              >
+                {{ revealed.has(index) ? 'Hide' : 'Show' }}
+              </button>
+              <button type="button" class="reveal" @click="copyBlock(index, block.value)">Copy</button>
+            </span>
           </div>
+          <p v-if="copyStatus[index]" class="copy-status">{{ copyStatus[index] }}</p>
         </li>
         <li v-if="!item.payload.content.length" class="empty">No content blocks.</li>
       </ul>
@@ -245,6 +290,12 @@ h1 {
   color: #444;
 }
 
+.block-buttons {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
 .reveal {
   padding: 0.2rem 0.5rem;
   border: 1px solid #d0d5dd;
@@ -253,6 +304,12 @@ h1 {
   cursor: pointer;
   font-size: 0.75rem;
   flex-shrink: 0;
+}
+
+.copy-status {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  color: #1a7f37;
 }
 
 .empty {

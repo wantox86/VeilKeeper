@@ -6,6 +6,8 @@ import DashboardView from '../views/DashboardView.vue'
 import CategoryView from '../views/CategoryView.vue'
 import VaultItemView from '../views/VaultItemView.vue'
 import VaultItemFormView from '../views/VaultItemFormView.vue'
+import LockedView from '../views/LockedView.vue'
+import SettingsView from '../views/SettingsView.vue'
 import { useAuthStore } from '../stores/auth'
 
 declare module 'vue-router' {
@@ -37,16 +39,40 @@ const router = createRouter({
       component: VaultItemFormView,
       meta: { requiresAuth: true },
     },
+    { path: '/settings', name: 'settings', component: SettingsView, meta: { requiresAuth: true } },
+    { path: '/locked', name: 'locked', component: LockedView },
     { path: '/health', name: 'health', component: HealthCheckView },
   ],
 })
 
-// Protected-route guard: redirect to /login (preserving the intended
-// destination) if there's no active session. Also redirect an already
-// logged-in user away from /login and /register, since re-registering or
-// re-deriving a login while a session is active isn't a meaningful action.
+/**
+ * Web Sprint 4 adds a third state on top of Sprint 2's plain
+ * authenticated/not-authenticated split: `auth.lockState` is
+ * `'logged_out' | 'locked' | 'unlocked'` (see `stores/auth.ts`). Guard
+ * order matters here:
+ *
+ *  1. A locked session takes priority over every other rule (except the
+ *     `/locked` route itself and `/health`, which stays reachable
+ *     unauthenticated for diagnostics same as before) -- redirects there
+ *     instead of letting a locked user reach `/login` (would spuriously
+ *     start a second session) or any vault route (would show stale UI with
+ *     no VDK to decrypt anything).
+ *  2. Visiting `/locked` without an actual locked session redirects onward
+ *     (to `/dashboard` if unlocked, `/login` if never logged in at all) --
+ *     `/locked` is a state-reflecting route, not a page you can just park
+ *     on.
+ *  3. Sprint 2's original two rules, unchanged.
+ */
 router.beforeEach((to) => {
   const auth = useAuthStore()
+
+  if (to.name !== 'locked' && to.name !== 'health' && auth.isLocked) {
+    return { name: 'locked', query: to.meta.requiresAuth ? { redirect: to.fullPath } : undefined }
+  }
+
+  if (to.name === 'locked' && !auth.isLocked) {
+    return auth.isAuthenticated ? { name: 'dashboard' } : { name: 'login' }
+  }
 
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }

@@ -71,6 +71,7 @@ async function onLogout(): Promise<void> {
         <span class="welcome"
           >Signed in as <strong>{{ auth.email }}</strong></span
         >
+        <RouterLink to="/settings" class="button-link">Settings</RouterLink>
         <button type="button" class="logout" @click="onLogout">Log out</button>
       </div>
     </header>

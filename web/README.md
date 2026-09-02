@@ -4,10 +4,10 @@ Web client for VeilKeeper (Vue 3 + TypeScript + Vite). See the repo root
 [`CLAUDE.md`](../CLAUDE.md) for the full product context, resolved design
 decisions, and the Web sprint roadmap.
 
-**Sprint 2 status: authentication.** Login/Register/Dashboard (protected
-route) + logout are implemented and wired to the real backend auth API and
-the crypto module. Vault CRUD UI is still not implemented -- that's Sprint
-3+.
+**Sprint 4 status: Secure UX.** Auth (Sprint 2), vault CRUD (Sprint 3), and
+now secret visibility/clipboard security/session lock (Sprint 4, see
+"Secure UX (Sprint 4)" below) are all implemented and wired to the real
+backend API.
 
 ## Requirements
 
@@ -56,11 +56,11 @@ that mutates state.
 ```text
 src/
   components/   Shared, reusable Vue components (empty so far)
-  views/        Route-level pages: HealthCheckView, LoginView, RegisterView, DashboardView
+  views/        Route-level pages: Health/Login/Register/Dashboard/Category/VaultItem(Form)/Locked/Settings
   layouts/      Page shells/layouts for later sprints (empty so far)
-  stores/       Pinia stores: health.ts, auth.ts (session/email/VDK, in-memory only)
-  services/     API client + backend service calls: api.ts, health.ts, authApi.ts, device.ts
-  crypto/       Client-side crypto: HKDF, AES-GCM, Argon2id, key hierarchy, base64
+  stores/       Pinia stores: health.ts, auth.ts (session/email/VDK/lockState, in-memory only), vault.ts, settings.ts (localStorage-backed prefs)
+  services/     API client + backend service calls: api.ts, health.ts, authApi.ts, vaultApi.ts, device.ts, idleTimer.ts, autoLockPolicy.ts, settingsStorage.ts
+  crypto/       Client-side crypto: HKDF, AES-GCM, Argon2id, key hierarchy, base64, vaultItemCrypto, clipboard
   router/       Vue Router setup, incl. the protected-route auth guard
   types/        Shared TypeScript types + hand-written ambient declarations
 ```
@@ -170,3 +170,102 @@ conditionally spreading the key in only when AAD is actually provided. This
 is exactly why Sprint 2's acceptance criteria required real-browser
 Playwright verification, not just Vitest: this bug was invisible to the
 existing (correct, passing) unit test suite.
+
+## Secure UX (Sprint 4)
+
+Mirrors Android Sprint 3's scope (secret visibility, clipboard security,
+auto-lock), adapted to what a browser can actually do -- **not** a
+copy-paste of the Android design, since Web has no Keystore, no
+BiometricPrompt, and no `FLAG_SECURE`. See CLAUDE.md's Web Sprint roadmap
+for the full sprint writeup; this section covers what a developer touching
+this code needs to know.
+
+### Secret visibility + Copy (`VaultItemView.vue`)
+
+Every content block (not just `type === "secret"`) has a Copy button now,
+next to secrets' existing Show/Hide toggle -- everything in this vault is
+sensitive, same reasoning Android's clipboard wiring uses.
+
+### Clipboard auto-clear -- a real, disclosed browser limitation (`crypto/clipboard.ts`)
+
+**The auto-clear is best-effort, not a guarantee, and this is a genuine
+constraint of the browser Clipboard API, not a bug or an oversight:**
+
+- The initial copy (`navigator.clipboard.writeText()`) always runs
+  synchronously inside the button's click handler, so it's reliable.
+- The scheduled clear runs later, from a `setTimeout`. By then the user may
+  have switched tabs/apps. Per the Clipboard API spec, a programmatic
+  clipboard write requires the document to still have focus -- if it
+  doesn't, the clear call rejects (`NotAllowedError`) and the clipboard is
+  silently left holding the copied value. There is no browser API to force
+  a clear without focus.
+- Unlike Android (which can read the current clipboard back to check it
+  wasn't superseded before clearing it), doing the equivalent on Web would
+  require the separate, more sensitive `clipboard-read` permission just to
+  decide whether to clear -- judged a worse privacy trade than
+  unconditionally overwriting, so it isn't done.
+
+This is surfaced honestly in the Settings screen's clipboard section copy,
+not silently assumed to work. Verified end-to-end with Playwright: the
+clear does fire reliably while the tab stays focused (see the Sprint 4 E2E
+run in CLAUDE.md's Current State); losing focus before the timer elapses
+was not separately re-tested in an automated way (would require simulating
+real OS-level focus loss, which Playwright can't do headlessly) but follows
+directly from the Clipboard API spec regardless.
+
+### Web Session Lock (`stores/auth.ts`, `services/idleTimer.ts`, `services/autoLockPolicy.ts`, `views/LockedView.vue`)
+
+`stores/auth.ts` now has a three-state `lockState`:
+`'logged_out' | 'locked' | 'unlocked'`. Locking (idle timeout, tab hidden,
+or the Settings "Lock now" button) clears only the in-memory VDK -- the
+session token, email, and the non-secret `unwrapMaterial`
+(kdf_salt/kdf_params/wrapped_vdk, captured at login) are kept, so
+`unlockWithPassword()` re-derives and unwraps the exact same VDK **offline,
+with no network call**. This mirrors Android's "lock is not logout"
+principle (CLAUDE.md "Post-launch fixes batch 2") as closely as the two
+platforms' constraints allow.
+
+`services/idleTimer.ts`'s `createInactivityWatcher` reacts to two signals:
+foreground mouse/keyboard/touch/scroll inactivity (a plain reset-on-activity
+`setTimeout`), and `visibilitychange` (tab hidden/shown) -- `"Immediately"`
+locks the instant the tab is hidden; any other timeout records the hide
+time and checks elapsed time when the tab becomes visible again (no
+`setInterval` kept running while hidden -- background tabs throttle timers
+unpredictably in every major browser). The pure lock/no-lock decisions live
+in `services/autoLockPolicy.ts`, split out purely for unit testability
+(mirrors Android's own `AutoLockPolicy`).
+
+`App.vue` wires this globally and, importantly, **imperatively navigates to
+`/locked`** the moment `lockState` flips to `'locked'` -- the router's
+`beforeEach` guard alone only redirects on the _next_ navigation attempt,
+which would leave a decrypted vault item rendered on screen indefinitely if
+the user just stopped touching the page. This was a real bug caught during
+this sprint's own Playwright verification (fixed before landing), not a
+hypothetical.
+
+Default auto-lock timeout is **5 minutes**, deliberately not "Immediately"
+despite that now being Android's own default (see CLAUDE.md's Web Sprint 4
+notes for the full reasoning -- Web's `visibilitychange` fires for far more
+benign reasons than Android's "app backgrounded").
+
+**Reload/tab-close behavior is unchanged from Sprint 2 and deliberately not
+extended this sprint**: the session token and VDK are still Pinia
+in-memory state only, never localStorage/sessionStorage, so a full page
+reload always logs the user out completely (there is no persisted-locked
+state to resume across a reload). The task allowed persisting the session
+token to localStorage "remember me"-style while keeping the VDK/password
+material out of it; this was deliberately **not** done here, to avoid
+expanding Sprint 2's already-disclosed simplification into a new
+session-persistence design decision without a dedicated sprint to think
+through its own failure modes (stale/expired tokens across reloads, XSS
+exposure surface of a persisted bearer token, etc.) -- same "don't
+overengineer / don't silently expand scope" principle every prior sprint
+followed.
+
+### Settings (`views/SettingsView.vue`, `stores/settings.ts`, `services/settingsStorage.ts`)
+
+Auto-lock timeout (Immediately/1/5/15 min) and clipboard clear delay
+(15/30/60s) -- both persisted to localStorage as plain preference ids
+(non-secret, same category as `services/device.ts`'s device id), plus
+"Lock now" and "Log out" buttons. Deliberately minimal, no
+theme/profile/biometric settings (no Web biometric equivalent exists).

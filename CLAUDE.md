@@ -837,11 +837,11 @@ unverified work across the whole project, called out consistently sprint over sp
 than glossed over.
 
 **Web client added after all 8 Android sprints landed** -- see "Web client (Sprint roadmap)"
-below for its own tracking. Web Sprint 2 (authentication) is complete as of the most recent
+below for its own tracking. Web Sprint 4 (Secure UX) is complete as of the most recent
 commit touching `web/`; Android/backend are unaffected by Web sprints themselves, though the
 backend did get a small, carefully-verified CORS middleware addition just before Web Sprint 2
 (see "Backend CORS fix" above) since Web Sprint 2 needed working cross-origin requests to
-function at all.
+function at all. Web Sprint 4 itself needed **no** backend changes at all.
 
 ## Web client (Sprint roadmap, separate from the 8 Android sprints above)
 
@@ -862,12 +862,15 @@ Planned roadmap (subject to revision as sprints land):
 - **Sprint 2** — Login/Register UI wired to the real crypto module + backend auth
   API (mirrors Android Sprint 1's UI scope, using the crypto foundation Sprint 1 already
   built and tested). Complete, see below.
-- **Sprint 3 (this one)** — vault foundation: categories + vault item CRUD, client-side
+- **Sprint 3** — vault foundation: categories + vault item CRUD, client-side
   encryption via the VDK. Complete, see below.
-- **Sprint 4-7 (planned)** — secure UX equivalents (session handling, auto-lock -- no
-  biometric/Keystore equivalent exists on Web, needs its own design decision when
-  reached), search, attachments, UI polish. Not yet scoped in detail; each should get its
-  own CLAUDE.md decisions section if anything is ambiguous, same as Android's sprints did.
+- **Sprint 4 (this one)** — Secure UX: secret visibility/copy, clipboard auto-clear
+  (with its real Clipboard API limitations disclosed, not assumed away), Web Session
+  Lock (inactivity/tab-hidden lock + offline unlock, no biometric/Keystore equivalent
+  exists on Web), Settings screen. Complete, see below.
+- **Sprint 5-7 (planned)** — search, attachments, UI polish. Not yet scoped in detail;
+  each should get its own CLAUDE.md decisions section if anything is ambiguous, same as
+  Android's sprints did.
 - **Sprint 8 (planned)** — internal/LAN-only deployment (see policy note above).
 
 ### Web Sprint 1 (Scaffold + crypto foundation) — complete, with one disclosed cross-sprint blocker
@@ -1224,3 +1227,185 @@ Delivered:
   live-backend verification.
 - No Web CI workflow added this sprint either (still optional per the roadmap intro's CI
   policy).
+
+### Web Sprint 4 (Secure UX) — complete
+
+Mirrors Android Sprint 3's scope (secret visibility, clipboard security, auto-lock),
+**adapted, not copy-pasted** -- Web has no Keystore, no `BiometricPrompt`, and no
+`FLAG_SECURE`. Screenshot protection (SPEC-BASE.md Section 33) was skipped entirely, per
+the spec's own explicit instruction that Web cannot provide this and "should not pretend
+that it can" -- no fake/partial implementation was attempted. **No backend changes** --
+everything here is client-side.
+
+- **Secret visibility + Copy** (`web/src/views/VaultItemView.vue`): Show/Hide already
+  existed from Sprint 3; this sprint adds a Copy button on **every** content block (not
+  just `type === "secret"`), same reasoning Android's own clipboard wiring doc comment
+  gives (everything in this vault is sensitive).
+- **Clipboard security** (`web/src/crypto/clipboard.ts`) -- **the disclosed Clipboard API
+  limitation this sprint's task specifically asked to research first, not assume away**:
+  the initial `navigator.clipboard.writeText()` copy always runs synchronously inside the
+  button's click handler, so it's reliable. The scheduled auto-clear, however, fires later
+  from a `setTimeout`; per the Clipboard API spec, a programmatic clipboard write requires
+  the document to still have focus, so if the user has switched tabs/apps before the timer
+  elapses, the clear silently fails (`NotAllowedError`) and the clipboard is left holding
+  the value. **There is no browser API to force a clear without focus, and no reliable
+  cross-browser way to detect "the user came back" and retry.** Unlike Android (which can
+  read the current clipboard back to skip clearing if a newer copy superseded it), doing
+  the equivalent on Web would need the separate, more sensitive `clipboard-read`
+  permission just to decide whether to clear -- judged a worse privacy trade than
+  unconditionally overwriting, so skipped deliberately. **Decision taken and disclosed,
+  not hidden**: auto-clear is presented to the user as best-effort only, with the
+  limitation spelled out in plain language directly in the Settings screen's clipboard
+  section (`web/src/views/SettingsView.vue`) and in `web/README.md`'s "Secure UX (Sprint
+  4)" section -- never presented as a guarantee. Never logs the copied value, clipboard
+  content, or error detail anywhere (console, network, storage) -- `clipboard.test.ts`
+  has an explicit test asserting no `console.log`/`console.error` call ever contains the
+  copied value, including on the deferred-clear failure path.
+- **Web Session Lock** (SPEC-BASE.md Section 32) -- **the other ambiguity this sprint's
+  task flagged, resolved and documented here rather than stopped-and-asked, since it
+  followed directly from CLAUDE.md's existing "lock is not logout" principle (Android's
+  "Post-launch fixes batch 2")**:
+  - `web/src/stores/auth.ts` gained a three-state `lockState`:
+    `'logged_out' | 'locked' | 'unlocked'`. Locking (`lock()`) clears **only** the
+    in-memory VDK -- `sessionToken`, `email`, and a new `unwrapMaterial` (the non-secret
+    `kdf_salt`/`kdf_params`/`wrapped_vdk` captured at login, mirroring Android's
+    `VdkUnwrapMaterial`) are all kept. `unlockWithPassword(password)` re-derives
+    MasterKey/WrapKey and unwraps the **same** VDK entirely offline (no network call) --
+    exactly Android's `AuthRepository.unlockWithPassword` shape, adapted to the fact that
+    Web doesn't need to survive a process kill the way Android's batch-2 fix did (a live
+    tab keeps its Pinia state naturally; only VDK needs clearing on lock). Wrong password
+    fails cleanly, stays `locked`, never touches the session token.
+  - `web/src/services/idleTimer.ts` (`createInactivityWatcher`) reacts to two signals,
+    mirroring Android's `AutoLockManager`: foreground mouse/keyboard/touch/scroll
+    inactivity (reset-on-activity `setTimeout`, arms only for a positive timeout), and
+    `visibilitychange` (tab hidden/shown) -- `"Immediately"` locks the instant the tab is
+    hidden (like Android's screen-off receiver); any other timeout records the hide
+    timestamp and checks elapsed time on becoming visible again (like Android's
+    "record background timestamp, check on foreground resume" logic) -- deliberately no
+    `setInterval` kept running while hidden, since background tabs throttle/suspend
+    timers unpredictably across browsers. The pure lock-decision math lives in
+    `web/src/services/autoLockPolicy.ts` (`shouldArmIdleTimer`/`shouldLockImmediatelyOnHide`/
+    `shouldLockOnResume`), split out purely for host-JVM-free unit testability, mirroring
+    Android's own `AutoLockPolicy` object.
+  - `web/src/App.vue` wires the watcher globally (starts/stops based on `lockState`,
+    re-arms on a Settings timeout change) and -- **a real bug caught by this sprint's own
+    Playwright verification, fixed before landing, not hypothetical** -- imperatively
+    calls `router.push('/locked')` the moment `lockState` flips to `'locked'`. Without
+    this, the router's `beforeEach` guard alone only redirects on the *next* navigation
+    attempt, so a user who simply stopped touching the page would have the VDK silently
+    cleared in the background while a fully decrypted vault item stayed rendered on
+    screen indefinitely. Mirrors Android's own centralized `LaunchedEffect(lockState)`
+    fix from "Post-launch fixes batch 2" almost exactly, just discovered here in Sprint 4
+    directly instead of as a later post-launch fix.
+  - `web/src/router/index.ts`: the guard now redirects to `/locked` whenever
+    `auth.isLocked` is true (any route except `/locked` itself and `/health`), and bounces
+    `/locked` onward (to `/dashboard` if unlocked, `/login` if never logged in) if visited
+    without an actual locked session.
+  - `web/src/views/LockedView.vue`: the Unlock-screen equivalent -- password field only
+    (no biometric option, none exists on Web), "Log out instead" escape hatch.
+  - **Decision, disclosed**: reload/tab-close behavior is unchanged from Sprint 2's
+    session-token-is-memory-only design and was deliberately **not** extended this
+    sprint, even though the task explicitly allowed persisting the session token to
+    localStorage "remember me"-style (while keeping VDK/password material out of it).
+    Not doing so avoids quietly expanding Sprint 2's already-disclosed simplification
+    into a brand-new session-persistence design decision (stale/expired-token-across-reload
+    handling, XSS exposure surface of a persisted bearer token, etc.) without a sprint
+    dedicated to thinking through its own failure modes -- same restraint principle every
+    prior sprint applied. A full reload today still always logs the user out completely;
+    this satisfies the task's actual requirement ("reload harus diminta login/unlock
+    ulang") without over-delivering on the optional part.
+  - **Default auto-lock timeout: 5 minutes, deliberately not "Immediately"** despite that
+    now being Android's own default (CLAUDE.md "Post-launch fixes batch 2", item 4) --
+    documented directly in `web/src/types/lock.ts`'s doc comment. Android's default
+    changed because of an Android-specific process-kill bug that has no Web analogue;
+    defaulting Web to Immediately would instead make the app re-lock on every innocuous
+    tab switch (`visibilitychange` fires far more often, and for more benign reasons,
+    than Android's "app backgrounded" signal), which would make the app annoying to use
+    out of the box. Fully user-configurable down to Immediately regardless.
+- **Settings screen** (`web/src/views/SettingsView.vue`, `stores/settings.ts`,
+  `services/settingsStorage.ts`): auto-lock timeout (Immediately/1/5/15 min, same option
+  list as Android for cross-platform UX consistency) + clipboard clear delay (15/30/60s,
+  same as Android Sprint 3), both persisted to localStorage as plain preference id
+  strings (non-secret, same "fine to persist" category as `services/device.ts`'s device
+  id -- never the VDK/session token), plus "Lock now" and "Log out" buttons. Deliberately
+  minimal, no theme/profile/biometric settings (no Web biometric equivalent exists),
+  matching Android's own `SettingsScreen.kt` restraint (SPEC-BASE.md Section 56 Rule 1).
+- **Vitest: 93 tests passing** (up from 60 in Sprint 3) -- new: `autoLockPolicy.test.ts`
+  (pure decision functions, no DOM), `idleTimer.test.ts` (fake timers + fake
+  target/document doubles: idle-timeout locking, activity resets, "Immediately"
+  tab-hidden locking, elapsed-time-on-resume locking, `stop()` cleanup, live
+  timeout-change re-arming), `clipboard.test.ts` (copy success, scheduled clear firing,
+  no-clear-when-delay-is-0, unavailable-API/permission-denied paths, the deferred-clear
+  failure never throwing or logging, and an explicit "never logs the copied value"
+  assertion), `settingsStorage.test.ts` (persistence + fallback-to-default for
+  corrupted/unknown stored ids), and new `stores/auth.test.ts` cases for the full lock
+  state machine (`lock()` clears VDK but keeps session/email/unwrapMaterial and is a
+  no-op when not unlocked; `unlockWithPassword` with the correct password restores the
+  exact VDK with **zero** network calls; wrong password fails cleanly and stays locked;
+  unlocking with no locked session throws; `logout()` from a locked state fully resets to
+  `logged_out`). `npm run lint` / `format:check` / `vue-tsc -b` / `npm run build` all
+  clean.
+- **End-to-end verification, performed for real against the live backend** (`npm run dev`
+  on the default port 5173 -- required, since the backend's `CORS_ALLOWED_ORIGINS`
+  allowlist only includes the Vite dev-server default; a non-default port silently fails
+  CORS, caught and fixed during this sprint's own verification setup -- + a real headless
+  Chromium session via Playwright, installed temporarily via `npm install --no-save
+  playwright`, uninstalled afterward, same pattern as every prior sprint; `web/.env`
+  pointed at `https://veilkeeper.quezacolt.my.id/`, deleted afterward). **All 20 scripted
+  checks passed**, all navigation after the initial page load done via real in-app link
+  clicks (not `page.goto()`) since a full browser navigation reloads the page and this
+  app's session state is deliberately memory-only -- a `page.goto()` mid-flow would just
+  re-prove "reload logs out" instead of testing the lock/unlock flow. Used Playwright's
+  Clock API (`page.clock.install()`/`fastForward()`) to advance browser time without
+  waiting real minutes, installed **before** the Settings timeout change that arms the
+  idle timer (the fake clock only affects timers scheduled after installation -- a real
+  `setTimeout` armed beforehand is unaffected by `fastForward`, a real ordering bug hit
+  and fixed while writing this verification, not a hypothetical caveat):
+  1. Registered, logged in, created a category + a vault item with a secret content
+     block.
+  2. Secret masked by default; Show reveals the exact original value; Copy puts the
+     exact value on the real OS clipboard (`navigator.clipboard.readText()` verified via
+     a context granted `clipboard-read`/`clipboard-write` permissions) and the status
+     line discloses the focus-limitation caveat.
+  3. Set clipboard delay to 15s via Settings; copied again; confirmed the clipboard held
+     the value immediately after copying and was genuinely empty ~15.5s later, while the
+     tab stayed focused throughout -- proving the auto-clear isn't just theoretical.
+  4. Set auto-lock to 1 minute; fast-forwarded 1m5s of fake idle time; confirmed the app
+     **proactively** navigated to `/locked` (the App.vue bug above, caught right here).
+  5. Confirmed an in-app back-navigation attempt while locked is bounced back to
+     `/locked` by the router guard (SPA history navigation, no reload -- genuinely
+     exercises the guard's `auth.isLocked` branch).
+  6. Unlocked with the correct password; confirmed it leaves `/locked`; navigated to the
+     same item via the Recent list and confirmed **the exact same title and the exact
+     same secret value** decrypt correctly -- proving the *same* VDK was restored
+     offline, not a fresh login/register cycle.
+  7. From Settings, "Lock now"; entered a wrong password -- stayed on `/locked` with an
+     "Incorrect password." error, session token untouched; then entered the correct
+     password immediately after and it worked, proving a failed unlock attempt never
+     drops the session.
+  8. Set auto-lock to "Immediately"; simulated the tab being hidden by overriding
+     `document.visibilityState` and dispatching a real `visibilitychange` event (the
+     closest a headless Chromium session can get to a real OS-level tab switch); confirmed
+     immediate redirect to `/locked` -- proving this trigger is independent of the
+     foreground idle timer.
+  9. A full page reload while unlocked still fully logs the user out back to `/login`,
+     confirming reload behavior is genuinely unchanged from Sprint 2.
+  10. Zero unexpected browser console errors across the entire flow.
+  - **Database spot-check**: read-only `SELECT` against the live `veilkeeper-mysql`
+    container confirmed the test item's `encrypted_payload` is a 143-byte opaque blob and
+    that no row's `encrypted_payload` contains the plaintext title or secret value
+    (`LIKE '%Sprint4%'` / `LIKE '%XyZ99%'` both returned 0 rows) -- same
+    ciphertext-only verification pattern as Sprint 3.
+  - **This creates one permanent (harmless) test account/category/item in the live
+    production database** (`web-sprint4-e2e-*@example.com`), same accepted pattern as
+    every prior Web sprint's own live-backend verification.
+- No Web CI workflow added this sprint either (still optional per the roadmap intro's CI
+  policy).
+- **Tooling note**: `rtk` (v0.43.0) was available and confirmed working at the start of
+  this sprint (`rtk --version`). Actually used for this sprint's `git status`/`git log`
+  checks at the start; the bulk of this sprint's shell work was `npm test`/`npm run
+  lint`/`npm run build`/`node <playwright script>`/`docker exec ... mysql` for
+  verification, none of which are part of rtk's git/gh/docker-focused rewrite set the same
+  way `git status` is -- used directly, consistent with every prior sprint's disclosed
+  fallback pattern (docker exec *is* nominally in rtk's rewrite set, but was invoked via
+  a one-off read-only `SELECT` spot-check, not a workflow rtk specifically optimizes).
