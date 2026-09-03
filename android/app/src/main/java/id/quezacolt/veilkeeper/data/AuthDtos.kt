@@ -33,6 +33,7 @@ data class RegisterRequest(
     @SerialName("kdf_params") val kdfParams: KdfParamsDto,
     @SerialName("kdf_version") val kdfVersion: Int,
     @SerialName("wrapped_vdk") val wrappedVdk: String, // base64
+    @SerialName("invite_code") val inviteCode: String, // required -- see backend's invite-code gate
 )
 
 @Serializable

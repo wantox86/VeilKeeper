@@ -41,6 +41,8 @@ class AuthRepository(
         data class InvalidCredentials(override val message: String) : AuthError()
         data class EmailTaken(override val message: String) : AuthError()
         data class RateLimited(override val message: String) : AuthError()
+        /** 403 from /auth/register -- either "registration is currently closed" (no invite codes configured server-side) or "invalid invite code". Message comes straight from the server, which already distinguishes the two cases (see backend/internal/httpserver/auth_handlers.go). */
+        data class InviteCodeRejected(override val message: String) : AuthError()
         data class ServerError(override val message: String) : AuthError()
         data class NetworkError(override val message: String) : AuthError()
     }
@@ -56,7 +58,7 @@ class AuthRepository(
      * -- see backend/internal/httpserver/auth_handlers.go's handleRegister
      * doc comment for the matching server-side rationale.
      */
-    suspend fun register(email: String, password: CharArray, username: String?): Result<Unit> =
+    suspend fun register(email: String, password: CharArray, username: String?, inviteCode: String): Result<Unit> =
         withContext(computeDispatcher) {
             val passwordBytes = password.toUtf8Bytes()
             val kdfSalt = vaultCrypto.generateKdfSalt()
@@ -82,6 +84,7 @@ class AuthRepository(
                         kdfParams = KdfParamsDto(params.memoryKiB, params.iterations, params.parallelism),
                         kdfVersion = KdfParams.CURRENT_VERSION,
                         wrappedVdk = wrappedVdk.b64(),
+                        inviteCode = inviteCode,
                     ),
                 )
 
@@ -230,6 +233,7 @@ class AuthRepository(
             ?: "request failed"
         return when (code) {
             401 -> AuthError.InvalidCredentials("invalid email or password")
+            403 -> AuthError.InviteCodeRejected(message)
             409 -> AuthError.EmailTaken("an account with this email already exists")
             429 -> AuthError.RateLimited("too many attempts, try again later")
             else -> AuthError.ServerError(message)

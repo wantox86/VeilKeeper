@@ -13,6 +13,7 @@ data class RegisterUiState(
     val username: String = "",
     val password: String = "",
     val confirmPassword: String = "",
+    val inviteCode: String = "",
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val registered: Boolean = false,
@@ -47,6 +48,10 @@ class RegisterViewModel(
         _uiState.value = _uiState.value.copy(confirmPassword = value, errorMessage = null)
     }
 
+    fun onInviteCodeChange(value: String) {
+        _uiState.value = _uiState.value.copy(inviteCode = value, errorMessage = null)
+    }
+
     fun register() {
         val state = _uiState.value
 
@@ -62,6 +67,10 @@ class RegisterViewModel(
             _uiState.value = state.copy(errorMessage = "Passwords do not match")
             return
         }
+        if (state.inviteCode.isBlank()) {
+            _uiState.value = state.copy(errorMessage = "Invite code is required")
+            return
+        }
 
         _uiState.value = state.copy(isLoading = true, errorMessage = null)
         viewModelScope.launch {
@@ -70,6 +79,7 @@ class RegisterViewModel(
                 email = state.email.trim(),
                 password = passwordChars,
                 username = state.username.trim().ifBlank { null },
+                inviteCode = state.inviteCode.trim(),
             )
             passwordChars.fill(' ')
 

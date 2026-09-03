@@ -31,6 +31,7 @@ class AuthRepositoryTest {
             email = "new@example.com",
             password = "super-secret-password".toCharArray(),
             username = "tester",
+            inviteCode = "test-invite-code",
         )
 
         assertTrue(result.isSuccess)
@@ -48,10 +49,30 @@ class AuthRepositoryTest {
     fun `register maps 409 to EmailTaken`() = runTest {
         api.registerResult = FakeAuthApi.errorResponse(409, "email_taken", "an account with this email already exists")
 
-        val result = repository.register("dupe@example.com", "password123".toCharArray(), null)
+        val result = repository.register("dupe@example.com", "password123".toCharArray(), null, "test-invite-code")
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is AuthRepository.AuthError.EmailTaken)
+    }
+
+    @Test
+    fun `register maps 403 to InviteCodeRejected with the server's message`() = runTest {
+        api.registerResult = FakeAuthApi.errorResponse(403, "invalid_invite_code", "invalid invite code")
+
+        val result = repository.register("wronginvite@example.com", "password123".toCharArray(), null, "not-a-real-code")
+
+        assertTrue(result.isFailure)
+        val error = result.exceptionOrNull()
+        assertTrue(error is AuthRepository.AuthError.InviteCodeRejected)
+        assertEquals("invalid invite code", error!!.message)
+    }
+
+    @Test
+    fun `register sends the invite_code field to the server`() = runTest {
+        val result = repository.register("invitecheck@example.com", "password123".toCharArray(), null, "family2026")
+
+        assertTrue(result.isSuccess)
+        assertEquals("family2026", api.lastRegisterRequest?.inviteCode)
     }
 
     @Test

@@ -127,6 +127,14 @@ fun RegisterScreen(
             modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm),
         )
 
+        OutlinedTextField(
+            value = state.inviteCode,
+            onValueChange = viewModel::onInviteCodeChange,
+            label = { Text("Invite code") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(top = Spacing.sm),
+        )
+
         state.errorMessage?.let {
             Text(
                 text = it,

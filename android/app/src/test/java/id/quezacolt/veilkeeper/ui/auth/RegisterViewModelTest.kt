@@ -66,6 +66,7 @@ class RegisterViewModelTest {
         viewModel.onEmailChange("user@example.com")
         viewModel.onPasswordChange("password123")
         viewModel.onConfirmPasswordChange("password123")
+        viewModel.onInviteCodeChange("family2026")
 
         viewModel.register()
         advanceUntilIdle()
@@ -74,6 +75,7 @@ class RegisterViewModelTest {
         assertTrue(state.registered)
         assertFalse(state.isLoading)
         assertEquals("user@example.com", api.lastRegisterRequest?.email)
+        assertEquals("family2026", api.lastRegisterRequest?.inviteCode)
     }
 
     @Test
@@ -83,6 +85,7 @@ class RegisterViewModelTest {
         viewModel.onEmailChange("dupe@example.com")
         viewModel.onPasswordChange("password123")
         viewModel.onConfirmPasswordChange("password123")
+        viewModel.onInviteCodeChange("family2026")
 
         viewModel.register()
         advanceUntilIdle()
@@ -90,5 +93,52 @@ class RegisterViewModelTest {
         val state = viewModel.uiState.value
         assertFalse(state.registered)
         assertTrue(state.errorMessage != null)
+    }
+
+    @Test
+    fun `missing invite code is rejected before calling the repository`() = runTest {
+        viewModel.onEmailChange("user@example.com")
+        viewModel.onPasswordChange("password123")
+        viewModel.onConfirmPasswordChange("password123")
+        // inviteCode left blank
+
+        viewModel.register()
+
+        assertEquals("Invite code is required", viewModel.uiState.value.errorMessage)
+        assertNull(api.lastRegisterRequest)
+    }
+
+    @Test
+    fun `invalid invite code from server surfaces its exact message and does not mark registered`() = runTest {
+        api.registerResult = FakeAuthApi.errorResponse(403, "invalid_invite_code", "invalid invite code")
+
+        viewModel.onEmailChange("user@example.com")
+        viewModel.onPasswordChange("password123")
+        viewModel.onConfirmPasswordChange("password123")
+        viewModel.onInviteCodeChange("wrong-code")
+
+        viewModel.register()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.registered)
+        assertEquals("invalid invite code", state.errorMessage)
+    }
+
+    @Test
+    fun `registration closed (no invite codes configured) surfaces the server's message`() = runTest {
+        api.registerResult = FakeAuthApi.errorResponse(403, "registration_closed", "registration is currently closed")
+
+        viewModel.onEmailChange("user@example.com")
+        viewModel.onPasswordChange("password123")
+        viewModel.onConfirmPasswordChange("password123")
+        viewModel.onInviteCodeChange("anything")
+
+        viewModel.register()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertFalse(state.registered)
+        assertEquals("registration is currently closed", state.errorMessage)
     }
 }
