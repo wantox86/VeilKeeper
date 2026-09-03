@@ -59,6 +59,15 @@ type AuthConfig struct {
 	// RateLimit settings for auth endpoints (SPEC-BASE.md Section 30).
 	RateLimitRequestsPerWindow int
 	RateLimitWindow            time.Duration
+
+	// InviteCodes gates POST /auth/register (SPEC-BASE.md Section 43:
+	// "fail clearly when required configuration is missing"). Unlike
+	// CORSAllowedOrigins/other list settings, an unset/empty INVITE_CODES
+	// deliberately produces an EMPTY slice here, not a fallback default --
+	// registration must fail closed (reject everyone) rather than silently
+	// falling back to some permissive default. Existing accounts/logins are
+	// entirely unaffected by this setting; it only gates new registrations.
+	InviteCodes []string
 }
 
 // DBConfig holds MySQL connection settings.
@@ -103,6 +112,7 @@ func Load(logger *slog.Logger) Config {
 			SessionTTL:                 getEnvDuration("SESSION_TTL_HOURS", 720) * time.Hour,
 			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
 			RateLimitWindow:            time.Minute,
+			InviteCodes:                parseCommaListStrict(os.Getenv("INVITE_CODES")),
 		},
 		AttachmentsDir:     getEnv("ATTACHMENTS_DIR", "/data/attachments"),
 		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://127.0.0.1:5173"}),
@@ -181,6 +191,26 @@ func getEnvList(key string, fallback []string) []string {
 	}
 	if len(out) == 0 {
 		return fallback
+	}
+	return out
+}
+
+// parseCommaListStrict is like getEnvList but with no fallback: an
+// unset/empty value returns an empty (nil) slice rather than substituting a
+// default. Used only for INVITE_CODES, where "nothing configured" must mean
+// "registration is closed," not "fall back to some default list."
+func parseCommaListStrict(v string) []string {
+	if v == "" {
+		return nil
+	}
+
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }

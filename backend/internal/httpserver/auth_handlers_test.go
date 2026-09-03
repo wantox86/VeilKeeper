@@ -23,6 +23,7 @@ func testDeps() (*authDeps, *fakeAuthStore) {
 			SessionTTL:                 time.Hour,
 			RateLimitRequestsPerWindow: 1000,
 			RateLimitWindow:            time.Minute,
+			InviteCodes:                []string{"test-invite-code"},
 		},
 		lockout: auth.NewAccountLockout(5, 15*time.Minute, 5*time.Minute),
 	}
@@ -56,6 +57,7 @@ func validRegisterRequest(email string) registerRequest {
 		KDFParams:  auth.DefaultKDFParams,
 		KDFVersion: auth.CurrentKDFVersion,
 		WrappedVDK: base64.StdEncoding.EncodeToString([]byte("some-wrapped-vdk-ciphertext-bytes")),
+		InviteCode: "test-invite-code",
 	}
 }
 
@@ -174,6 +176,68 @@ func TestRegister_EmptyAuthKeyRejected(t *testing.T) {
 	rec := doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", req, nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty auth_key, got %d", rec.Code)
+	}
+}
+
+func TestRegister_MissingInviteCodeRejected(t *testing.T) {
+	deps, _ := testDeps()
+
+	req := validRegisterRequest("noinvite@example.com")
+	req.InviteCode = ""
+	rec := doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", req, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing invite_code, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegister_WrongInviteCodeRejected(t *testing.T) {
+	deps, _ := testDeps()
+
+	req := validRegisterRequest("wronginvite@example.com")
+	req.InviteCode = "not-the-right-code"
+	rec := doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", req, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for wrong invite_code, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error != "invalid_invite_code" {
+		t.Fatalf("expected invalid_invite_code error code, got %q", body.Error)
+	}
+}
+
+func TestRegister_ValidInviteCodeSucceeds(t *testing.T) {
+	deps, _ := testDeps()
+
+	req := validRegisterRequest("validinvite@example.com")
+	req.InviteCode = "test-invite-code"
+	rec := doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", req, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for valid invite_code, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegister_NoInviteCodesConfiguredFailsClosed(t *testing.T) {
+	deps, _ := testDeps()
+	deps.cfg.InviteCodes = nil // simulate INVITE_CODES unset/empty in the environment
+
+	// Even a "correct-looking" invite code must be rejected when none are
+	// configured at all -- fail closed, never silently allow registration.
+	req := validRegisterRequest("closedreg@example.com")
+	rec := doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", req, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when no invite codes are configured, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body errorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error != "registration_closed" {
+		t.Fatalf("expected registration_closed error code, got %q", body.Error)
 	}
 }
 

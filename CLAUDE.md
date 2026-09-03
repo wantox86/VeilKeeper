@@ -1969,3 +1969,88 @@ was made, so it was implemented, verified, and documented rather than left open 
 - Both `README.md` and `web/README.md` updated to describe the resolved state (HTTPS URL,
   cert-generation step, per-browser manual-trust instructions for Chrome/Edge, Firefox, and
   Safari) -- no longer document this as an open blocker.
+
+### Task #15 -- Invite-code gate for registration -- complete
+
+Closes the previously-open `/auth/register` endpoint (anyone who knew the URL could create an
+account) with a shared invite-code allowlist, mirroring the `REGISTRATION_ENABLED` on/off pattern
+already used on this host's `signPDF-Backend` project, but as a code list rather than a bare
+toggle. Touches all three surfaces (backend, Android, Web); no crypto/key-hierarchy changes.
+
+- **Backend** (`backend/internal/auth/invite.go` new; `internal/config/config.go`,
+  `internal/httpserver/auth_handlers.go` extended): new env var `INVITE_CODES`
+  (comma-separated plaintext codes). `POST /auth/register` now requires an `invite_code` field.
+  **Fail-closed** (SPEC-BASE.md Section 43): if `INVITE_CODES` is unset/empty, ALL registrations
+  are rejected (`403 registration_closed`) -- never silently falls back to open registration.
+  If codes ARE configured but the submitted one doesn't match any of them, rejected with a
+  deliberately generic `403 invalid_invite_code` (same message regardless of how "close" the
+  guess was, so nothing here helps brute-force a valid code). `auth.ValidateInviteCode` compares
+  every candidate with `crypto/subtle.ConstantTimeCompare` rather than short-circuiting on the
+  first match. Already covered by the existing per-IP rate limiter on all `/api/v1/auth/*` routes
+  (Sprint 1, `AUTH_RATE_LIMIT_REQUESTS`) -- no new rate-limit code needed, just confirmed it
+  applies to `/register` too. Existing accounts/login/logout/prelogin are entirely untouched --
+  this only gates the registration handler. Unit tests added (`auth_handlers_test.go`):
+  missing/wrong/valid invite code, and the fail-closed "no codes configured" case; `testAuthConfig`
+  (`server_test.go`) and `testDeps` (`auth_handlers_test.go`) both updated with a test invite code
+  so every pre-existing register-dependent test keeps passing. `go test -race -cover ./...`:
+  **75 tests, all passing** (up from 65). `gofmt`/`go vet`/`go build`: clean.
+  **Verified against a real, fully-isolated throwaway Docker stack first** (`docker compose -p`
+  with distinct container names/ports/volume, its own scratch `.env.verify`, `--env-file` pinned
+  explicitly so compose's `${...}` interpolation didn't accidentally read the real `.env` --
+  learned the hard way when a first attempt without `--env-file` silently substituted production
+  DB credentials into the throwaway MySQL container): confirmed all four required behaviors via
+  `curl` (missing/wrong/correct invite code, and fail-closed with `INVITE_CODES` unset), then tore
+  the throwaway stack down completely (`down -v`, images removed) before touching anything real.
+  **Deployed to the live production backend**: generated two real invite codes via `openssl rand
+  -hex 8`, added `INVITE_CODES=<code1>,<code2>` to production `.env` (no other secret touched --
+  `SERVER_PEPPER`/`DB_PASSWORD`/`CORS_ALLOWED_ORIGINS` all unchanged), `docker compose up -d
+  --build api` (this also recreated `mysql` since it shares the same `env_file`; data survived via
+  the named volume, confirmed via `/ready` and a successful login immediately after). Verified
+  live against `https://veilkeeper.quezacolt.my.id`: register with no code -> `invalid_invite_code`;
+  register with a wrong code -> same generic error; register with a real code -> `201` (created a
+  disclosed test account, `invite-gate-verify@example.com`, left in production DB -- no
+  delete-account endpoint exists, same pattern as prior sprints' manual verification accounts);
+  login on that fresh account succeeded normally; `prelogin` still correctly distinguishes
+  real-vs-fake accounts. Did **not** have a real pre-existing user's password to test an *old*
+  account's login end-to-end (zero-knowledge by design -- the operator never has this), so
+  "existing users unaffected" is verified by (a) the login/prelogin/session code paths being
+  completely untouched by this diff and (b) a fresh account going through the identical code path
+  successfully -- disclosed as the honest limit of what's verifiable here, not glossed over.
+  `docker ps` reconfirmed zero collision with the Qoder `vk-sprint3` stack throughout.
+- **Android** (`data/AuthDtos.kt`, `AuthRepository.kt`, `ui/auth/RegisterViewModel.kt`,
+  `RegisterScreen.kt`): `RegisterRequest` gained a required `invite_code` field; `RegisterScreen`
+  gained an "Invite code" text field (required, same validation tier as password match); a new
+  `AuthError.InviteCodeRejected` surfaces the server's exact message (`registration is currently
+  closed` vs `invalid invite code`) instead of a generic failure string. Unit tests added
+  (`AuthRepositoryTest`, `RegisterViewModelTest`) for missing/wrong/valid invite code and the
+  fail-closed server response. `./gradlew clean assembleDebug testDebugUnitTest lintDebug`: all
+  green, **159 unit tests passing** (up from 154), 0 lint errors, same pre-existing warning count.
+  **Verified live, not just unit-tested**: booted the existing `veilkeeper_test` AVD, installed
+  the freshly built debug APK (which by default points at `http://10.0.2.2:18091/`, i.e. this
+  same host's just-deployed production API), and drove the real Register screen via
+  `adb shell input`/`uiautomator dump` (no source changes needed to make this possible, just UI
+  automation over the already-built app): wrong invite code showed "invalid invite code" inline
+  on-screen; the real invite code registered successfully and navigated to Login; confirmed via a
+  `prelogin` call afterward that the account really was created server-side. Emulator killed
+  afterward.
+- **Web** (`src/types/auth.ts`, `src/services/authApi.ts` (unchanged, generic pass-through),
+  `src/stores/auth.ts`, `src/views/RegisterView.vue`): same shape as Android --
+  `RegisterRequest.invite_code` required, `RegisterView` gained an "Invite code" input (validated
+  client-side as required before submit, matching the existing password-match check style),
+  `describeError` gained explicit `invalid_invite_code`/`registration_closed` cases (previously
+  would have fallen through to the generic default branch, which *also* would have shown the
+  server's real message -- these cases were added for explicitness/parity with Android, not
+  because the fallback was broken). Unit tests updated/added in `auth.test.ts` and
+  `authApi.test.ts` for missing/wrong/valid invite code and the fail-closed case. `npm run test`:
+  **129 tests passing** (up from prior count), `npm run build` (`vue-tsc -b && vite build`) and
+  `npm run lint`: both clean. Rebuilt and redeployed the live `veilkeeper-web` container
+  (`docker compose up -d --build web`) so the LAN-only Web UI actually serves this change.
+  **Not verified with a real browser this time** (unlike the Web Sprint 8 HTTPS follow-up, which
+  used Playwright/Chromium) -- Playwright's browser binaries weren't installed in this session and
+  installing them just for this one check was judged not worth the extra footprint given the
+  identical wire contract was already verified end-to-end live via the Android app against this
+  same backend. Disclosed as a real gap, not silently skipped: a manual click-through against
+  `https://192.168.50.131:18092/#/register` (accept the self-signed cert once) is recommended
+  before considering this fully closed on Web specifically.
+- `.env.example` updated with `INVITE_CODES` (placeholder codes, comment explaining fail-closed
+  behavior); this file updated to mark Task #15 complete.

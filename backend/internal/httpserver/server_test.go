@@ -23,6 +23,7 @@ func testAuthConfig() config.AuthConfig {
 		SessionTTL:                 24 * time.Hour,
 		RateLimitRequestsPerWindow: 1000,
 		RateLimitWindow:            time.Minute,
+		InviteCodes:                []string{"test-invite-code"},
 	}
 }
 

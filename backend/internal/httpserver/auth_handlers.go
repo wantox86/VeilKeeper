@@ -47,6 +47,7 @@ type registerRequest struct {
 	KDFParams  auth.KDFParams `json:"kdf_params"`
 	KDFVersion int            `json:"kdf_version"`
 	WrappedVDK string         `json:"wrapped_vdk"` // base64
+	InviteCode string         `json:"invite_code"`
 }
 
 type registerResponse struct {
@@ -131,6 +132,30 @@ func (d *authDeps) handlePrelogin(w http.ResponseWriter, r *http.Request) {
 func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	// Invite-code gate (closes the previously-open /auth/register endpoint
+	// -- see CLAUDE.md "invite-code gate" task). Two distinct failure
+	// modes, per that task's spec:
+	//   1. No codes configured at all: this is a server misconfiguration /
+	//      deliberate "registration closed" state, not a guessing target,
+	//      so it gets a specific, honest message (fail closed, never
+	//      silently allow everyone in -- SPEC-BASE.md Section 43).
+	//   2. Codes ARE configured but the submitted one doesn't match: this
+	//      IS a guessing target, so the message is deliberately generic and
+	//      identical for "wrong code" vs "no code sent" vs "close but not
+	//      quite" -- nothing here should help an attacker narrow down a
+	//      valid code. Rate limiting (already applied to this whole route,
+	//      see server.go) is the actual brute-force defense.
+	// Existing accounts/sessions are entirely untouched by this check --
+	// it only runs on the registration path.
+	if len(d.cfg.InviteCodes) == 0 {
+		writeError(w, http.StatusForbidden, "registration_closed", "registration is currently closed")
+		return
+	}
+	if !auth.ValidateInviteCode(d.cfg.InviteCodes, req.InviteCode) {
+		writeError(w, http.StatusForbidden, "invalid_invite_code", "invalid invite code")
 		return
 	}
 
