@@ -18,22 +18,30 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Sprint 1: no server-side config for this yet -- backend host is
-        // whatever machine runs `docker compose up` (see repo root
-        // docker-compose.yml, host port 18091). 10.0.2.2 is the standard
-        // Android emulator alias for the host machine's localhost. Override
-        // via -PapiBaseUrl=... for a real device on the same LAN.
-        val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?) ?: "http://10.0.2.2:18091/"
-        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 
     buildTypes {
+        debug {
+            // Sprint 1: no server-side config for this yet -- backend host is
+            // whatever machine runs `docker compose up` (see repo root
+            // docker-compose.yml, host port 18091). 10.0.2.2 is the standard
+            // Android emulator alias for the host machine's localhost. Override
+            // via -PapiBaseUrl=... for a real device on the same LAN.
+            val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?) ?: "http://10.0.2.2:18091/"
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Release builds are meant for real devices off the dev LAN, so
+            // they default to the public tunnel domain (cloudflared, see
+            // root CLAUDE.md) instead of the emulator-only 10.0.2.2 alias.
+            // Still overridable via -PapiBaseUrl=... if ever needed.
+            val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?) ?: "https://veilkeeper.quezacolt.my.id/"
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
         }
     }
 
