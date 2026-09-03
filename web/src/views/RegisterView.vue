@@ -11,6 +11,7 @@ const email = ref('')
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const inviteCode = ref('')
 const submitting = ref(false)
 const validationError = ref<string | null>(null)
 
@@ -27,10 +28,14 @@ async function onSubmit(): Promise<void> {
     validationError.value = 'Passwords do not match.'
     return
   }
+  if (!inviteCode.value.trim()) {
+    validationError.value = 'Invite code is required.'
+    return
+  }
 
   submitting.value = true
   try {
-    await auth.register(email.value.trim(), username.value.trim(), password.value)
+    await auth.register(email.value.trim(), username.value.trim(), password.value, inviteCode.value.trim())
     await router.push({ name: 'login', query: { registered: '1', email: email.value.trim() } })
   } catch {
     // auth.errorMessage already holds a user-facing message; nothing else to do.
@@ -85,6 +90,9 @@ async function onSubmit(): Promise<void> {
           required
           minlength="8"
         />
+
+        <label for="inviteCode">Invite code</label>
+        <input id="inviteCode" v-model="inviteCode" type="text" autocomplete="off" required />
 
         <button type="submit" :disabled="submitting">
           {{ submitting ? 'Creating account…' : 'Create account' }}

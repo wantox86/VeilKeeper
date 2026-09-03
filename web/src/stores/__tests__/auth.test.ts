@@ -50,7 +50,7 @@ describe('useAuthStore', () => {
     vi.spyOn(authApi, 'register').mockResolvedValue({ user_id: 1, email: 'user@example.com' })
 
     const store = useAuthStore()
-    await store.register('user@example.com', 'someone', PASSWORD)
+    await store.register('user@example.com', 'someone', PASSWORD, 'family2026')
 
     expect(store.status).toBe('idle')
     expect(store.errorMessage).toBeNull()
@@ -60,6 +60,7 @@ describe('useAuthStore', () => {
     expect(call.email).toBe('user@example.com')
     expect(call.kdf_version).toBe(CURRENT_KDF_VERSION)
     expect(call.kdf_params.memory).toBe(DEFAULT_KDF_PARAMS.memoryKiB)
+    expect(call.invite_code).toBe('family2026')
   })
 
   it('register() surfaces a friendly message on email_taken (409)', async () => {
@@ -68,12 +69,40 @@ describe('useAuthStore', () => {
     )
 
     const store = useAuthStore()
-    await expect(store.register('dup@example.com', 'someone', PASSWORD)).rejects.toBeInstanceOf(
-      authApi.ApiError,
-    )
+    await expect(
+      store.register('dup@example.com', 'someone', PASSWORD, 'family2026'),
+    ).rejects.toBeInstanceOf(authApi.ApiError)
 
     expect(store.status).toBe('error')
     expect(store.errorMessage).toBe('An account with this email already exists.')
+  })
+
+  it('register() surfaces a friendly message on invalid_invite_code (403)', async () => {
+    vi.spyOn(authApi, 'register').mockRejectedValue(
+      new authApi.ApiError(403, 'invalid_invite_code', 'invalid invite code'),
+    )
+
+    const store = useAuthStore()
+    await expect(
+      store.register('user@example.com', 'someone', PASSWORD, 'wrong-code'),
+    ).rejects.toBeInstanceOf(authApi.ApiError)
+
+    expect(store.status).toBe('error')
+    expect(store.errorMessage).toBe('Invalid invite code.')
+  })
+
+  it('register() surfaces a friendly message on registration_closed (403)', async () => {
+    vi.spyOn(authApi, 'register').mockRejectedValue(
+      new authApi.ApiError(403, 'registration_closed', 'registration is currently closed'),
+    )
+
+    const store = useAuthStore()
+    await expect(
+      store.register('user@example.com', 'someone', PASSWORD, 'anything'),
+    ).rejects.toBeInstanceOf(authApi.ApiError)
+
+    expect(store.status).toBe('error')
+    expect(store.errorMessage).toBe('Registration is currently closed.')
   })
 
   it('login() derives the correct AuthKey, unwraps the VDK, and populates session state', async () => {

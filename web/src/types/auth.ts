@@ -43,6 +43,7 @@ export interface RegisterRequest {
   kdf_params: KdfParamsWire
   kdf_version: number
   wrapped_vdk: string
+  invite_code: string
 }
 
 export interface RegisterResponse {

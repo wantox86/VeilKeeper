@@ -44,6 +44,7 @@ describe('authApi', () => {
       kdf_params: { memory: 65536, iterations: 3, parallelism: 4 },
       kdf_version: 1,
       wrapped_vdk: 'dmRr',
+      invite_code: 'family2026',
     })
 
     expect(result).toEqual({ user_id: 1, email: 'user@example.com' })
@@ -68,8 +69,31 @@ describe('authApi', () => {
         kdf_params: { memory: 65536, iterations: 3, parallelism: 4 },
         kdf_version: 1,
         wrapped_vdk: 'dmRr',
+        invite_code: 'family2026',
       }),
     ).rejects.toMatchObject({ status: 409, code: 'email_taken' })
+  })
+
+  it('register throws ApiError with the backend error code on 403 invalid_invite_code', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(jsonResponse(403, { error: 'invalid_invite_code', message: 'invalid invite code' })),
+    )
+
+    await expect(
+      register({
+        email: 'user@example.com',
+        username: 'someone',
+        auth_key: 'YQ==',
+        kdf_salt: 'c2FsdA==',
+        kdf_params: { memory: 65536, iterations: 3, parallelism: 4 },
+        kdf_version: 1,
+        wrapped_vdk: 'dmRr',
+        invite_code: 'wrong-code',
+      }),
+    ).rejects.toMatchObject({ status: 403, code: 'invalid_invite_code' })
   })
 
   it('login throws ApiError(invalid_credentials) on 401', async () => {

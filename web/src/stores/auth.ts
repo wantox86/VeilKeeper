@@ -94,7 +94,7 @@ export const useAuthStore = defineStore('auth', {
      * that follows, and keeps this action's error handling simple (a failed
      * register never leaves a half-authenticated session state to unwind).
      */
-    async register(email: string, username: string, password: string): Promise<void> {
+    async register(email: string, username: string, password: string, inviteCode: string): Promise<void> {
       this.status = 'loading'
       this.errorMessage = null
 
@@ -120,6 +120,7 @@ export const useAuthStore = defineStore('auth', {
           kdf_params: toWireKdfParams(DEFAULT_KDF_PARAMS),
           kdf_version: CURRENT_KDF_VERSION,
           wrapped_vdk: bytesToBase64(wrappedVdk),
+          invite_code: inviteCode,
         })
 
         this.status = 'idle'
@@ -295,6 +296,10 @@ function describeError(err: unknown): string {
         return 'Too many failed attempts. Please try again later.'
       case 'email_taken':
         return 'An account with this email already exists.'
+      case 'invalid_invite_code':
+        return 'Invalid invite code.'
+      case 'registration_closed':
+        return 'Registration is currently closed.'
       default:
         return err.message
     }
