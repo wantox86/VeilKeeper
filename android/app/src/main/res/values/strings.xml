@@ -2,4 +2,25 @@
 <resources>
     <string name="app_name">VeilKeeper</string>
     <string name="tagline">Keep your secrets behind the veil.</string>
+
+    <!-- Home screen (Phase 3 dashboard layout) -->
+    <string name="home_search_placeholder">Search your vault…</string>
+    <string name="home_search_local_note">Local only — queries never leave this device.</string>
+    <string name="section_categories">Categories</string>
+    <string name="section_recent">Recent</string>
+    <string name="section_results">Results</string>
+    <string name="home_new_category">New category</string>
+    <string name="home_no_categories_title">No categories yet</string>
+    <string name="home_no_categories_message">Categories help organize your vault — they\'re created automatically on registration.</string>
+    <string name="home_empty_vault_title">Nothing behind the veil yet.</string>
+    <string name="home_empty_vault_message">Add your first item.</string>
+    <string name="home_no_results_title">No results</string>
+    <string name="home_no_results_message">Nothing in your vault matches \"%1$s\".</string>
+    <string name="cd_settings">Settings</string>
+    <string name="cd_lock">Lock vault</string>
+    <string name="cd_add_item">Add item</string>
+    <string name="new_category_dialog_title">New category</string>
+    <string name="category_name_field">Category name</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
 </resources>

@@ -150,4 +150,23 @@ class HomeViewModel(private val repository: VaultRepository) : ViewModel() {
     fun onSearchQueryChange(query: String) {
         _uiState.value = _uiState.value.copy(searchQuery = query)
     }
+
+    /**
+     * Phase 3 dashboard layout: "New category" link on Home (revamp
+     * reference screenshot). Reuses [VaultRepository.createCategory] (already
+     * used by the Category screen's rename/create flows) -- on success,
+     * re-fetches silently so the new tile appears without a full-screen
+     * loading flash, same pattern as [refreshSilently].
+     */
+    fun createCategory(name: String) {
+        viewModelScope.launch {
+            repository.createCategory(name)
+                .onSuccess { refreshSilently() }
+                .onFailure {
+                    if (!it.isVaultLocked()) {
+                        _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "Failed to create category")
+                    }
+                }
+        }
+    }
 }

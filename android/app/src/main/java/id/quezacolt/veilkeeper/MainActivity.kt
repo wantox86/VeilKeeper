@@ -186,6 +186,12 @@ fun VeilKeeperApp(
                     navController.navigate("add-item/$defaultCategoryId")
                 },
                 onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
+                // Phase 3 dashboard layout: top bar's lock icon (revamp
+                // reference screenshot). AuthSessionHolder.lock() is called
+                // directly elsewhere too (VaultRepository, AutoLockManager)
+                // -- MainActivity's global lockState observer (below) is
+                // what actually navigates to Unlock once this fires.
+                onLockVault = { AuthSessionHolder.lock() },
             )
         }
         composable(ROUTE_SETTINGS) {

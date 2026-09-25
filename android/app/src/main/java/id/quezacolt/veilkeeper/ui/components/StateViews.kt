@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Refresh
@@ -18,6 +19,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,12 +59,24 @@ fun VeilKeeperEmptyState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // Phase 3: a tinted circular badge (matches the revamp reference
+        // screenshot's amber inbox circle) instead of a bare icon -- applied
+        // to every empty state site-wide for consistency (Section 27
+        // "excellent empty states"), not just Home.
+        Surface(
+            modifier = Modifier.size(64.dp),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         Spacer(Modifier.height(Spacing.sm))
         Text(
             title,
