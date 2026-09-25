@@ -33,6 +33,8 @@ import id.quezacolt.veilkeeper.ui.auth.UnlockScreen
 import id.quezacolt.veilkeeper.ui.category.CategoryScreen
 import id.quezacolt.veilkeeper.ui.home.HomeScreen
 import id.quezacolt.veilkeeper.ui.home.VaultViewModelFactory
+import id.quezacolt.veilkeeper.ui.settings.DevicesScreen
+import id.quezacolt.veilkeeper.ui.settings.DevicesViewModel
 import id.quezacolt.veilkeeper.ui.settings.SettingsScreen
 import id.quezacolt.veilkeeper.ui.settings.SettingsViewModelFactory
 import id.quezacolt.veilkeeper.ui.theme.VeilKeeperTheme
@@ -44,6 +46,7 @@ private const val ROUTE_REGISTER = "register"
 private const val ROUTE_UNLOCK = "unlock"
 private const val ROUTE_HOME = "home"
 private const val ROUTE_SETTINGS = "settings"
+private const val ROUTE_DEVICES = "devices"
 private const val ARG_CATEGORY_ID = "categoryId"
 private const val ARG_ITEM_ID = "itemId"
 private const val ROUTE_CATEGORY = "category/{$ARG_CATEGORY_ID}"
@@ -85,7 +88,7 @@ class MainActivity : FragmentActivity() {
         setContent {
             VeilKeeperTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    VeilKeeperApp(authViewModelFactory, settingsViewModelFactory, vaultRepository)
+                    VeilKeeperApp(authViewModelFactory, settingsViewModelFactory, vaultRepository, authRepository)
                 }
             }
         }
@@ -97,6 +100,7 @@ fun VeilKeeperApp(
     authFactory: AuthViewModelFactory,
     settingsFactory: androidx.lifecycle.ViewModelProvider.Factory,
     vaultRepository: VaultRepository,
+    authRepository: AuthRepository,
 ) {
     val navController = rememberNavController()
 
@@ -197,6 +201,13 @@ fun VeilKeeperApp(
         composable(ROUTE_SETTINGS) {
             SettingsScreen(
                 factory = settingsFactory,
+                onBack = { navController.popBackStack() },
+                onOpenDevices = { navController.navigate(ROUTE_DEVICES) },
+            )
+        }
+        composable(ROUTE_DEVICES) {
+            DevicesScreen(
+                factory = DevicesViewModel.factory(authRepository),
                 onBack = { navController.popBackStack() },
             )
         }

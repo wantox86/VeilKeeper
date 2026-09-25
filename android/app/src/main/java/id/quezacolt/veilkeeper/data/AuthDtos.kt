@@ -65,3 +65,20 @@ data class ApiErrorResponse(
     val error: String,
     val message: String,
 )
+
+/**
+ * One row of GET /api/v1/devices (backend httpserver/device_handlers.go
+ * deviceResponse). Revoked devices are still included by the backend (so
+ * the client can show device history) -- [revokedAt] non-null is how the UI
+ * tells those apart and hides the revoke action for them.
+ */
+@Serializable
+data class DeviceDto(
+    val id: Long,
+    @SerialName("device_identifier") val deviceIdentifier: String,
+    @SerialName("device_name") val deviceName: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("last_seen_at") val lastSeenAt: String,
+    @SerialName("is_current") val isCurrent: Boolean,
+    @SerialName("revoked_at") val revokedAt: String? = null,
+)

@@ -9,10 +9,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
+import androidx.compose.material.icons.outlined.DevicesOther
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,9 +40,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import id.quezacolt.veilkeeper.R
 import id.quezacolt.veilkeeper.VeilKeeperApplication
 import id.quezacolt.veilkeeper.data.AutoLockTimeout
 import id.quezacolt.veilkeeper.data.ClipboardClearDelay
+import androidx.compose.ui.res.stringResource
 import id.quezacolt.veilkeeper.ui.theme.Spacing
 
 /**
@@ -54,6 +60,7 @@ import id.quezacolt.veilkeeper.ui.theme.Spacing
 fun SettingsScreen(
     factory: ViewModelProvider.Factory,
     onBack: () -> Unit,
+    onOpenDevices: () -> Unit,
     viewModel: SettingsViewModel = viewModel(factory = factory),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -135,6 +142,27 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+
+            SettingsDivider()
+
+            SettingsSectionTitle("Account")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClick = onOpenDevices),
+            ) {
+                Icon(Icons.Outlined.DevicesOther, contentDescription = null)
+                Spacer(Modifier.width(Spacing.sm))
+                Text(stringResource(R.string.settings_devices_menu_item), modifier = Modifier.weight(1f))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForwardIos,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 

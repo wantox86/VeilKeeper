@@ -23,4 +23,19 @@
     <string name="category_name_field">Category name</string>
     <string name="action_save">Save</string>
     <string name="action_cancel">Cancel</string>
+
+    <!-- Devices & Sessions screen (Phase 4) -->
+    <string name="settings_devices_menu_item">Devices &amp; sessions</string>
+    <string name="devices_title">Devices &amp; sessions</string>
+    <string name="devices_loading">Loading devices…</string>
+    <string name="devices_note">These are the devices currently or previously signed in to your account.</string>
+    <string name="devices_empty_title">No devices found</string>
+    <string name="devices_this_device">THIS DEVICE</string>
+    <string name="devices_revoked_badge">REVOKED</string>
+    <string name="devices_created">Added %1$s</string>
+    <string name="devices_revoke_title">Revoke this device?</string>
+    <string name="devices_revoke_body">"%1$s will be signed out and won\'t be able to access your vault until it logs in again."</string>
+    <string name="devices_revoke_confirm">Revoke</string>
+    <string name="devices_revoke_cd">Revoke device</string>
+    <string name="cd_back">Back</string>
 </resources>

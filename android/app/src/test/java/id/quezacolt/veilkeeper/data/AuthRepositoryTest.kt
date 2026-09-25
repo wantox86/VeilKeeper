@@ -275,4 +275,73 @@ class AuthRepositoryTest {
 
         assertTrue(result.isFailure)
     }
+
+    // --- Phase 4 (plan.md): devices & sessions --------------------------
+
+    @Test
+    fun `listDevices sends a bearer token and returns the devices from the server`() = runTest {
+        AuthSessionHolder.set("token-1", ByteArray(32))
+        api.listDevicesResult = retrofit2.Response.success(
+            listOf(
+                DeviceDto(
+                    id = 1,
+                    deviceIdentifier = "device-1",
+                    deviceName = "This Phone",
+                    createdAt = "2026-09-01T00:00:00Z",
+                    lastSeenAt = "2026-09-25T00:00:00Z",
+                    isCurrent = true,
+                ),
+            ),
+        )
+
+        val result = repository.listDevices()
+
+        assertTrue(result.isSuccess)
+        assertEquals("Bearer token-1", api.lastListDevicesBearer)
+        assertEquals(1, result.getOrNull()?.size)
+        assertTrue(result.getOrNull()?.first()?.isCurrent == true)
+    }
+
+    @Test
+    fun `listDevices fails cleanly when there is no active session`() = runTest {
+        AuthSessionHolder.clear()
+
+        val result = repository.listDevices()
+
+        assertTrue(result.isFailure)
+        assertNull(api.lastListDevicesBearer)
+    }
+
+    @Test
+    fun `listDevices maps 401 to Unauthorized-shaped ServerError`() = runTest {
+        AuthSessionHolder.set("token-1", ByteArray(32))
+        api.listDevicesResult = FakeAuthApi.errorResponse(401, "unauthorized", "invalid or expired session")
+
+        val result = repository.listDevices()
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is AuthRepository.AuthError.InvalidCredentials)
+    }
+
+    @Test
+    fun `revokeDevice sends a bearer token and the device id`() = runTest {
+        AuthSessionHolder.set("token-1", ByteArray(32))
+
+        val result = repository.revokeDevice(42)
+
+        assertTrue(result.isSuccess)
+        assertEquals("Bearer token-1", api.lastRevokeDeviceBearer)
+        assertEquals(42L, api.lastRevokeDeviceId)
+    }
+
+    @Test
+    fun `revokeDevice surfaces a server error for a device that does not belong to the caller`() = runTest {
+        AuthSessionHolder.set("token-1", ByteArray(32))
+        api.revokeDeviceResult = FakeAuthApi.errorResponse(404, "not_found", "device not found")
+
+        val result = repository.revokeDevice(999)
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is AuthRepository.AuthError.ServerError)
+    }
 }
