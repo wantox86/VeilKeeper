@@ -49,6 +49,22 @@ type NewUser struct {
 	WrappedVDK  []byte
 }
 
+// Device is a persisted record of a device that has logged in at least once
+// (created/refreshed by UpsertDevice at every login). RevokedAt is set by
+// RevokeDeviceAndSessions when the user explicitly revokes it from the
+// Devices & Sessions screen (see plan.md Phase 0-1) -- a revoked device
+// still has a row here (never deleted), it just can no longer authenticate
+// new requests once its sessions are also revoked.
+type Device struct {
+	ID               int64
+	UserID           int64
+	DeviceIdentifier string
+	DeviceName       string
+	CreatedAt        time.Time
+	LastSeenAt       time.Time
+	RevokedAt        *time.Time
+}
+
 // Session is a persisted (hashed) bearer session token.
 type Session struct {
 	ID        int64
@@ -96,6 +112,23 @@ type AuthStore interface {
 	// It is a no-op (no error) if the session doesn't exist or is already
 	// revoked, so logout is idempotent.
 	RevokeSession(ctx context.Context, tokenHash string) error
+
+	// ListDevices returns all of userID's devices (revoked ones included, so
+	// the client can show device history / a "revoked" badge), ordered by
+	// ID. Ownership-scoped: never returns another user's devices
+	// (SPEC-BASE.md Section 47, "User A cannot access ... User B devices").
+	ListDevices(ctx context.Context, userID int64) ([]Device, error)
+
+	// RevokeDeviceAndSessions marks deviceID as revoked and revokes every
+	// session tied to it, for a device owned by userID. Returns ErrNotFound
+	// if deviceID doesn't exist or doesn't belong to userID -- the same
+	// "verify ownership, then mutate" shape as
+	// DeleteCategoryAndReassign/DeleteVaultItem, so a Phase 1 HTTP handler
+	// can map that straight to a 404 rather than letting one user revoke
+	// another user's device. Revoking an already-revoked device owned by
+	// the caller is a no-op (no error), matching RevokeSession's idempotent
+	// pattern. Runs as a single transaction.
+	RevokeDeviceAndSessions(ctx context.Context, userID, deviceID int64) error
 }
 
 // --- Sprint 2: vault foundation (categories + vault items) -----------------

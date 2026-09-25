@@ -19,6 +19,7 @@ type fakeAuthStore struct {
 	users       map[string]store.User // key: normalized email
 	usersByID   map[int64]store.User
 	devices     map[string]int64 // key: fmt userID:identifier
+	devicesByID map[int64]store.Device
 	sessions    map[string]store.Session
 	categories  map[int64]store.Category
 	items       map[int64]store.VaultItem
@@ -30,6 +31,7 @@ func newFakeAuthStore() *fakeAuthStore {
 		users:       make(map[string]store.User),
 		usersByID:   make(map[int64]store.User),
 		devices:     make(map[string]int64),
+		devicesByID: make(map[int64]store.Device),
 		sessions:    make(map[string]store.Session),
 		categories:  make(map[int64]store.Category),
 		items:       make(map[int64]store.VaultItem),
@@ -76,18 +78,72 @@ func (f *fakeAuthStore) CreateUser(_ context.Context, nu store.NewUser) (int64, 
 	return id, nil
 }
 
-func (f *fakeAuthStore) UpsertDevice(_ context.Context, userID int64, deviceIdentifier, _ string) (int64, error) {
+func (f *fakeAuthStore) UpsertDevice(_ context.Context, userID int64, deviceIdentifier, deviceName string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	key := deviceKey(userID, deviceIdentifier)
+	now := time.Now()
 	if id, ok := f.devices[key]; ok {
+		d := f.devicesByID[id]
+		d.DeviceName = deviceName
+		d.LastSeenAt = now
+		f.devicesByID[id] = d
 		return id, nil
 	}
 	f.nextID++
 	id := f.nextID
 	f.devices[key] = id
+	f.devicesByID[id] = store.Device{
+		ID:               id,
+		UserID:           userID,
+		DeviceIdentifier: deviceIdentifier,
+		DeviceName:       deviceName,
+		CreatedAt:        now,
+		LastSeenAt:       now,
+	}
 	return id, nil
+}
+
+// --- Phase 0 (Devices & Sessions, see plan.md): device management ---------
+
+func (f *fakeAuthStore) ListDevices(_ context.Context, userID int64) ([]store.Device, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var out []store.Device
+	for _, d := range f.devicesByID {
+		if d.UserID == userID {
+			out = append(out, d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (f *fakeAuthStore) RevokeDeviceAndSessions(_ context.Context, userID, deviceID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	d, ok := f.devicesByID[deviceID]
+	if !ok || d.UserID != userID {
+		return store.ErrNotFound
+	}
+
+	if d.RevokedAt == nil {
+		now := time.Now()
+		d.RevokedAt = &now
+		f.devicesByID[deviceID] = d
+	}
+
+	for hash, s := range f.sessions {
+		if s.UserID == userID && s.DeviceID == deviceID && s.RevokedAt == nil {
+			now := time.Now()
+			s.RevokedAt = &now
+			f.sessions[hash] = s
+		}
+	}
+	return nil
 }
 
 func (f *fakeAuthStore) CreateSession(_ context.Context, userID, deviceID int64, tokenHash string, expiresAt time.Time) (int64, error) {

@@ -87,6 +87,11 @@ func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.A
 	mux.HandleFunc("GET /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleGetAttachment))
 	mux.HandleFunc("DELETE /api/v1/vault/items/{id}/attachments/{attachmentId}", withAuth(vDeps.handleDeleteAttachment))
 
+	// Devices & sessions (plan.md Phase 1): lists/revokes the caller's own
+	// devices, same requireSession guard as every other authenticated route.
+	mux.HandleFunc("GET /api/v1/devices", withAuth(vDeps.handleListDevices))
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", withAuth(vDeps.handleRevokeDevice))
+
 	return corsMiddleware(corsAllowedOrigins, mux)
 }
 

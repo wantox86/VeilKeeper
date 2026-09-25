@@ -142,6 +142,93 @@ func (s *MySQLStore) RevokeSession(ctx context.Context, tokenHash string) error 
 	return nil
 }
 
+// --- Phase 0 (Devices & Sessions, see plan.md): device management ---------
+
+func (s *MySQLStore) ListDevices(ctx context.Context, userID int64) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, device_identifier, device_name, created_at, last_seen_at, revoked_at
+		FROM devices WHERE user_id = ? ORDER BY id ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list devices: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Device
+	for rows.Next() {
+		d, err := scanDevice(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list devices: scan: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list devices: rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *MySQLStore) RevokeDeviceAndSessions(ctx context.Context, userID, deviceID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: revoke device: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Verify the device exists and belongs to userID before mutating
+	// anything -- same "check ownership, then mutate" shape as
+	// DeleteCategoryAndReassign's getCategoryTx call, so a foreign/unknown
+	// device ID is reported as ErrNotFound rather than silently no-op'd.
+	if _, err := getDeviceTx(ctx, tx, userID, deviceID); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE devices SET revoked_at = NOW() WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+		deviceID, userID); err != nil {
+		return fmt.Errorf("store: revoke device: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE sessions SET revoked_at = NOW() WHERE device_id = ? AND user_id = ? AND revoked_at IS NULL`,
+		deviceID, userID); err != nil {
+		return fmt.Errorf("store: revoke device: revoke sessions: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// getDeviceTx returns a single device, ownership-checked, via either *sql.DB
+// or *sql.Tx (see the querier interface next to getCategoryTx).
+func getDeviceTx(ctx context.Context, q querier, userID, deviceID int64) (Device, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT id, user_id, device_identifier, device_name, created_at, last_seen_at, revoked_at
+		FROM devices WHERE id = ? AND user_id = ?`, deviceID, userID)
+	return scanDevice(row)
+}
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows, letting
+// scanDevice back both getDeviceTx (single row) and ListDevices (multi-row).
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanDevice(row rowScanner) (Device, error) {
+	var d Device
+	var deviceName sql.NullString
+	var revokedAt sql.NullTime
+	if err := row.Scan(&d.ID, &d.UserID, &d.DeviceIdentifier, &deviceName, &d.CreatedAt, &d.LastSeenAt, &revokedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Device{}, ErrNotFound
+		}
+		return Device{}, fmt.Errorf("scan device: %w", err)
+	}
+	d.DeviceName = deviceName.String
+	if revokedAt.Valid {
+		d.RevokedAt = &revokedAt.Time
+	}
+	return d, nil
+}
+
 func nullableString(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}

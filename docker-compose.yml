@@ -18,7 +18,12 @@ services:
       - .env
     environment:
       HTTP_PORT: "8080"
-      DB_HOST: mysql
+      # 2026-09-22: DB dikonsolidasi ke container `consolidated-mysql`
+      # (~/Documents/Github/consolidated-mysql/), bukan lagi `mysql` service
+      # lokal di file ini (lihat legacy comment di service `mysql` di bawah).
+      # Container consolidated-mysql attach ke network `veilkeeper_default`
+      # jadi resolvable by name.
+      DB_HOST: consolidated-mysql
       DB_PORT: "3306"
     ports:
       # Host port 18091 -- NOT 18080, which is already used by the Qoder
@@ -26,9 +31,6 @@ services:
       - "18091:8080"
     volumes:
       - ./data/attachments:/data/attachments
-    depends_on:
-      mysql:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -48,6 +50,10 @@ services:
         reservations:
           memory: 64M
 
+  # LEGACY (2026-09-22): mysql service lama, sudah tidak dipakai `api`
+  # (lihat DB_HOST di atas, sekarang consolidated-mysql). Definisi dibiarkan
+  # ada (bukan dihapus) sebagai rollback safety net -- container aslinya
+  # (veilkeeper-mysql) juga masih ada/stopped, jangan dihapus volume-nya.
   mysql:
     image: mysql:8.4
     container_name: veilkeeper-mysql

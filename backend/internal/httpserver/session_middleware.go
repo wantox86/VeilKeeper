@@ -14,7 +14,10 @@ import (
 // contextKey avoids collisions with other packages' context values.
 type contextKey int
 
-const userIDContextKey contextKey = iota
+const (
+	userIDContextKey contextKey = iota
+	deviceIDContextKey
+)
 
 // requireSession wraps next with bearer-session authentication for all
 // Sprint 2 vault/category routes. On success, the authenticated user's ID is
@@ -51,6 +54,7 @@ func requireSession(sessionStore store.AuthStore, logger *slog.Logger, nowFunc f
 		}
 
 		ctx := context.WithValue(r.Context(), userIDContextKey, sess.UserID)
+		ctx = context.WithValue(ctx, deviceIDContextKey, sess.DeviceID)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -65,4 +69,16 @@ func userIDFromContext(ctx context.Context) int64 {
 		panic("httpserver: userIDFromContext called without requireSession middleware")
 	}
 	return id
+}
+
+// deviceIDFromContext returns the device ID of the session that
+// authenticated the current request, as set by requireSession. Unlike
+// userIDFromContext it does not panic on a miss -- it returns (0, false) --
+// since it's expected to be called from code paths (Phase 1's device
+// handlers, see plan.md) that need to distinguish "this is the device
+// making the request" from "this is some other device in the list" without
+// treating a miss as a programming error.
+func deviceIDFromContext(ctx context.Context) (int64, bool) {
+	id, ok := ctx.Value(deviceIDContextKey).(int64)
+	return id, ok
 }

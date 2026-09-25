@@ -18,10 +18,15 @@ class FakeAuthApi : AuthApi {
     var registerResult: Response<RegisterResponse> = Response.success(RegisterResponse(1, "user@example.com"))
     var loginResult: Response<LoginResponse>? = null // set per-test; null triggers a hard failure if unset
     var logoutResult: Response<Unit> = Response.success(Unit)
+    var listDevicesResult: Response<List<DeviceDto>> = Response.success(emptyList())
+    var revokeDeviceResult: Response<Unit> = Response.success(Unit)
 
     var lastRegisterRequest: RegisterRequest? = null
     var lastLoginRequest: LoginRequest? = null
     var lastLogoutBearer: String? = null
+    var lastListDevicesBearer: String? = null
+    var lastRevokeDeviceBearer: String? = null
+    var lastRevokeDeviceId: Long? = null
 
     override suspend fun prelogin(request: PreloginRequest): PreloginResponse = preloginResponse
 
@@ -38,6 +43,17 @@ class FakeAuthApi : AuthApi {
     override suspend fun logout(bearerToken: String): Response<Unit> {
         lastLogoutBearer = bearerToken
         return logoutResult
+    }
+
+    override suspend fun listDevices(bearerToken: String): Response<List<DeviceDto>> {
+        lastListDevicesBearer = bearerToken
+        return listDevicesResult
+    }
+
+    override suspend fun revokeDevice(bearerToken: String, id: Long): Response<Unit> {
+        lastRevokeDeviceBearer = bearerToken
+        lastRevokeDeviceId = id
+        return revokeDeviceResult
     }
 
     companion object {

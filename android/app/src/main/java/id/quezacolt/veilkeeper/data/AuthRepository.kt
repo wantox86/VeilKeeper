@@ -228,6 +228,44 @@ class AuthRepository(
         }
     }
 
+    // --- Phase 4: devices & sessions ------------------------------------
+
+    /** Lists every device on the current account (GET /api/v1/devices). */
+    suspend fun listDevices(): Result<List<DeviceDto>> = withContext(ioDispatcher) {
+        val token = AuthSessionHolder.sessionToken
+            ?: return@withContext Result.failure(AuthError.ServerError("no active session"))
+        try {
+            val response = api.listDevices("Bearer $token")
+            if (response.isSuccessful) {
+                Result.success(response.body() ?: emptyList())
+            } else {
+                Result.failure(mapErrorResponse(response.code(), response.errorBody()?.string()))
+            }
+        } catch (e: HttpException) {
+            Result.failure(AuthError.NetworkError(e.message ?: "network error"))
+        } catch (e: java.io.IOException) {
+            Result.failure(AuthError.NetworkError(e.message ?: "network error"))
+        }
+    }
+
+    /** Revokes a device and every session tied to it (DELETE /api/v1/devices/{id}). */
+    suspend fun revokeDevice(deviceId: Long): Result<Unit> = withContext(ioDispatcher) {
+        val token = AuthSessionHolder.sessionToken
+            ?: return@withContext Result.failure(AuthError.ServerError("no active session"))
+        try {
+            val response = api.revokeDevice("Bearer $token", deviceId)
+            if (response.isSuccessful) {
+                Result.success(Unit)
+            } else {
+                Result.failure(mapErrorResponse(response.code(), response.errorBody()?.string()))
+            }
+        } catch (e: HttpException) {
+            Result.failure(AuthError.NetworkError(e.message ?: "network error"))
+        } catch (e: java.io.IOException) {
+            Result.failure(AuthError.NetworkError(e.message ?: "network error"))
+        }
+    }
+
     private fun mapErrorResponse(code: Int, body: String?): AuthError {
         val message = body?.let { runCatching { errorJson.decodeFromString(ApiErrorResponse.serializer(), it).message }.getOrNull() }
             ?: "request failed"
