@@ -6,7 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 
-// Phase 6 UI polish (SPEC-BASE.md Section 27/28): the "Midnight Vault"
+// Phase 6 UI polish (SPEC-BASE.md Section 27/28): the "behind the veil"
 // custom palette defined in Color.kt, applied for both light and dark mode.
 //
 // Deliberate choice: dynamic color (Material You, Android 12+ wallpaper
@@ -82,6 +82,7 @@ fun VeilKeeperTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = VeilKeeperTypography,
+        shapes = VeilKeeperShapes,
         content = content,
     )
 }
