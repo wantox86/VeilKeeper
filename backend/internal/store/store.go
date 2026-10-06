@@ -113,6 +113,15 @@ type AuthStore interface {
 	// revoked, so logout is idempotent.
 	RevokeSession(ctx context.Context, tokenHash string) error
 
+	// ExtendSession implements the sliding-session window: it atomically
+	// sets expires_at = newExpiresAt for the session identified by tokenHash,
+	// but only if the session is still live as of now (not revoked, not yet
+	// expired) and newExpiresAt actually moves expiry forward. Returns
+	// whether a row was updated. An expired or revoked session is never
+	// revived (the condition is part of the UPDATE itself, so there is no
+	// check-then-write race with logout/device revoke).
+	ExtendSession(ctx context.Context, tokenHash string, newExpiresAt, now time.Time) (bool, error)
+
 	// ListDevices returns all of userID's devices (revoked ones included, so
 	// the client can show device history / a "revoked" badge), ordered by
 	// ID. Ownership-scoped: never returns another user's devices

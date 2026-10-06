@@ -142,6 +142,24 @@ func (s *MySQLStore) RevokeSession(ctx context.Context, tokenHash string) error 
 	return nil
 }
 
+// ExtendSession: see AuthStore.ExtendSession. now is passed from Go (not
+// SQL NOW()) so the comparison uses the same clock/timezone as the
+// expires_at values written by CreateSession.
+func (s *MySQLStore) ExtendSession(ctx context.Context, tokenHash string, newExpiresAt, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET expires_at = ?
+		WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ? AND expires_at < ?`,
+		newExpiresAt, tokenHash, now, newExpiresAt)
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 // --- Phase 0 (Devices & Sessions, see plan.md): device management ---------
 
 func (s *MySQLStore) ListDevices(ctx context.Context, userID int64) ([]Device, error) {
