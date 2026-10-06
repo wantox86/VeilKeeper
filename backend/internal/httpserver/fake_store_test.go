@@ -21,6 +21,7 @@ type fakeAuthStore struct {
 	devices     map[string]int64 // key: fmt userID:identifier
 	devicesByID map[int64]store.Device
 	sessions    map[string]store.Session
+	extendCalls int
 	categories  map[int64]store.Category
 	items       map[int64]store.VaultItem
 	attachments map[int64]store.Attachment
@@ -172,6 +173,20 @@ func (f *fakeAuthStore) GetSessionByTokenHash(_ context.Context, tokenHash strin
 		return store.Session{}, store.ErrNotFound
 	}
 	return s, nil
+}
+
+func (f *fakeAuthStore) ExtendSession(_ context.Context, tokenHash string, newExpiresAt, now time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.sessions[tokenHash]
+	if !ok || s.RevokedAt != nil || !s.ExpiresAt.After(now) || !s.ExpiresAt.Before(newExpiresAt) {
+		return false, nil
+	}
+	s.ExpiresAt = newExpiresAt
+	f.sessions[tokenHash] = s
+	f.extendCalls++
+	return true, nil
 }
 
 func (f *fakeAuthStore) RevokeSession(_ context.Context, tokenHash string) error {

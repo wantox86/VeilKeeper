@@ -66,7 +66,7 @@ func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.A
 	// (requireSession), which injects the authenticated user ID used for
 	// ownership scoping in every store call these handlers make.
 	vDeps := &vaultDeps{store: st, logger: logger, attachmentsDir: attachmentsDir}
-	withAuth := func(h http.HandlerFunc) http.HandlerFunc { return requireSession(st, logger, nil, h) }
+	withAuth := func(h http.HandlerFunc) http.HandlerFunc { return requireSession(st, logger, nil, authCfg.SessionTTL, authCfg.SessionMaxLifetime, h) }
 
 	mux.HandleFunc("GET /api/v1/categories", withAuth(vDeps.handleListCategories))
 	mux.HandleFunc("POST /api/v1/categories", withAuth(vDeps.handleCreateCategory))
