@@ -55,6 +55,11 @@ type AuthConfig struct {
 
 	// SessionTTL is how long a session token remains valid after login.
 	SessionTTL time.Duration
+	// SessionMaxLifetime is an optional absolute cap on a session's total
+	// life, measured from created_at (SESSION_MAX_HOURS). Sliding renewal
+	// never pushes expires_at past created_at + SessionMaxLifetime. 0 (the
+	// default) disables the cap. Should be >= SessionTTL when set.
+	SessionMaxLifetime time.Duration
 
 	// RateLimit settings for auth endpoints (SPEC-BASE.md Section 30).
 	RateLimitRequestsPerWindow int
@@ -110,6 +115,7 @@ func Load(logger *slog.Logger) Config {
 		Auth: AuthConfig{
 			ServerPepper:               pepper,
 			SessionTTL:                 getEnvDuration("SESSION_TTL_HOURS", 720) * time.Hour,
+			SessionMaxLifetime:         getEnvDuration("SESSION_MAX_HOURS", 0) * time.Hour,
 			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
 			RateLimitWindow:            time.Minute,
 			InviteCodes:                parseCommaListStrict(os.Getenv("INVITE_CODES")),

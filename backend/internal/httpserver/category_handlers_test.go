@@ -31,7 +31,7 @@ func withPathIDs(h http.HandlerFunc, id, attachmentID int64) http.HandlerFunc {
 // authedHandler wraps h with requireSession backed by fs, mirroring how
 // NewMux wires vault routes in server.go.
 func authedHandler(fs *fakeAuthStore, h http.HandlerFunc) http.HandlerFunc {
-	return requireSession(fs, discardLogger(), nil, h)
+	return requireSession(fs, discardLogger(), nil, 0, 0, h)
 }
 
 // loginAndGetToken registers (if not already) and logs in a test user,

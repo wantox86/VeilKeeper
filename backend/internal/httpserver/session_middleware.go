@@ -25,7 +25,7 @@ const (
 // This is the sole place that maps a bearer token to a user ID for these
 // routes -- ownership enforcement in the store layer then does the rest
 // (SPEC-BASE.md Section 30, "Authorization must be enforced server-side").
-func requireSession(sessionStore store.AuthStore, logger *slog.Logger, nowFunc func() time.Time, next http.HandlerFunc) http.HandlerFunc {
+func requireSession(sessionStore store.AuthStore, logger *slog.Logger, nowFunc func() time.Time, ttl, maxLifetime time.Duration, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearerToken(r)
 		if !ok {
@@ -53,9 +53,40 @@ func requireSession(sessionStore store.AuthStore, logger *slog.Logger, nowFunc f
 			return
 		}
 
+		maybeExtendSession(r.Context(), sessionStore, logger, sess, auth.HashSessionToken(token), now, ttl, maxLifetime)
+
 		ctx := context.WithValue(r.Context(), userIDContextKey, sess.UserID)
 		ctx = context.WithValue(ctx, deviceIDContextKey, sess.DeviceID)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// maybeExtendSession implements the sliding session window: a successfully
+// authenticated request pushes expires_at out to now+ttl, so a session only
+// expires after ttl of inactivity. To keep DB writes off the hot path it only
+// writes once less than half of ttl remains (so at most ~1 write per ttl/2 per
+// session). If maxLifetime > 0 the new expiry is capped at
+// created_at+maxLifetime (absolute lifetime). Failures are logged and
+// swallowed: the request was already authenticated and a missed extension is
+// harmless (the next request retries).
+func maybeExtendSession(ctx context.Context, st store.AuthStore, logger *slog.Logger, sess store.Session, tokenHash string, now time.Time, ttl, maxLifetime time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	if sess.ExpiresAt.Sub(now) >= ttl/2 {
+		return
+	}
+	newExpiry := now.Add(ttl)
+	if maxLifetime > 0 {
+		if capAt := sess.CreatedAt.Add(maxLifetime); newExpiry.After(capAt) {
+			newExpiry = capAt
+		}
+	}
+	if !newExpiry.After(sess.ExpiresAt) {
+		return
+	}
+	if _, err := st.ExtendSession(ctx, tokenHash, newExpiry, now); err != nil {
+		logger.Error("session auth: extend failed", "error", err.Error())
 	}
 }
 

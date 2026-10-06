@@ -212,7 +212,13 @@ Delivered:
   `infra/mysql/init/002-auth-schema.sql` (`users`/`devices`/`sessions`, matching SPEC-BASE.md
   Section 31 with the kdf_salt/kdf_params/kdf_version/wrapped_vdk/auth_key_hash fields CLAUDE.md
   requires). New env vars (see `.env.example`): `SERVER_PEPPER`, `SESSION_TTL_HOURS`,
-  `AUTH_RATE_LIMIT_REQUESTS`. Unit tests (auth package + httpserver package, using an in-memory
+  `AUTH_RATE_LIMIT_REQUESTS`. **Sliding session (2026-10)**: `requireSession` extends
+  `sessions.expires_at` to now+`SESSION_TTL_HOURS` on authenticated requests, only when less than
+  half the TTL remains (`store.AuthStore.ExtendSession`, one atomic UPDATE guarded by
+  `revoked_at IS NULL AND expires_at > now`, so expired/revoked sessions are never revived).
+  Optional `SESSION_MAX_HOURS` (default 0 = off) caps total life from `created_at`. Login's
+  `expires_at` response is therefore only the initial value; the client does not use it for logout
+  decisions. Unit tests (auth package + httpserver package, using an in-memory
   fake `store.AuthStore` — no MySQL needed) cover: hash round-trip, wrong-key rejection, unique
   salts per hash, KDF param validation, fake-salt determinism/uniqueness, rate limiter and
   account lockout behavior, and all four handlers including duplicate-email/wrong-auth-key/
