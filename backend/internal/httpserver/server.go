@@ -44,29 +44,48 @@ const (
 // CORS wrapping -- callers (main.go, tests) only ever need ServeHTTP, never
 // mux-specific methods.
 func NewMux(pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig, attachmentsDir string, corsAllowedOrigins []string) http.Handler {
+	return NewMuxWithContext(context.Background(), pinger, st, logger, authCfg, attachmentsDir, corsAllowedOrigins)
+}
+
+// NewMuxWithContext is like NewMux, binding background rate-limiter/lockout
+// sweepers to ctx so they shut down cleanly when the server stops.
+func NewMuxWithContext(ctx context.Context, pinger Pinger, st store.Store, logger *slog.Logger, authCfg config.AuthConfig, attachmentsDir string, corsAllowedOrigins []string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("GET /ready", handleReady(pinger, logger))
 
+	maxConcurrent := authCfg.Argon2MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = auth.DefaultArgon2MaxConcurrent
+	}
+	hasher, err := auth.NewHasher(maxConcurrent)
+	if err != nil {
+		// Defensive fallback: config.Load already rejects <= 0.
+		hasher, _ = auth.NewHasher(auth.DefaultArgon2MaxConcurrent)
+	}
+
 	deps := &authDeps{
 		store:   st,
 		logger:  logger,
 		cfg:     authCfg,
-		lockout: auth.NewAccountLockout(accountLockoutMaxFailures, accountLockoutWindow, accountLockoutDuration),
+		lockout: auth.NewAccountLockoutWithContext(ctx, accountLockoutMaxFailures, accountLockoutWindow, accountLockoutDuration, auth.DefaultMaxKeys, 0),
+		hasher:  hasher,
 	}
-	ipLimiter := auth.NewIPLimiter(authCfg.RateLimitRequestsPerWindow, authCfg.RateLimitWindow)
+	ipLimiter := auth.NewIPLimiterWithContext(ctx, authCfg.RateLimitRequestsPerWindow, authCfg.RateLimitWindow, auth.DefaultMaxKeys, 0)
 
-	mux.HandleFunc("POST /api/v1/auth/prelogin", rateLimited(ipLimiter, deps.handlePrelogin))
-	mux.HandleFunc("POST /api/v1/auth/register", rateLimited(ipLimiter, deps.handleRegister))
-	mux.HandleFunc("POST /api/v1/auth/login", rateLimited(ipLimiter, deps.handleLogin))
-	mux.HandleFunc("POST /api/v1/auth/logout", rateLimited(ipLimiter, deps.handleLogout))
+	mux.HandleFunc("POST /api/v1/auth/prelogin", rateLimited(ipLimiter, authCfg.TrustedProxyCIDRs, deps.handlePrelogin))
+	mux.HandleFunc("POST /api/v1/auth/register", rateLimited(ipLimiter, authCfg.TrustedProxyCIDRs, deps.handleRegister))
+	mux.HandleFunc("POST /api/v1/auth/login", rateLimited(ipLimiter, authCfg.TrustedProxyCIDRs, deps.handleLogin))
+	mux.HandleFunc("POST /api/v1/auth/logout", rateLimited(ipLimiter, authCfg.TrustedProxyCIDRs, deps.handleLogout))
 
 	// Sprint 2: vault foundation routes. All require a valid bearer session
 	// (requireSession), which injects the authenticated user ID used for
 	// ownership scoping in every store call these handlers make.
 	vDeps := &vaultDeps{store: st, logger: logger, attachmentsDir: attachmentsDir}
-	withAuth := func(h http.HandlerFunc) http.HandlerFunc { return requireSession(st, logger, nil, authCfg.SessionTTL, authCfg.SessionMaxLifetime, h) }
+	withAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return requireSession(st, logger, nil, authCfg.SessionTTL, authCfg.SessionMaxLifetime, h)
+	}
 
 	mux.HandleFunc("GET /api/v1/categories", withAuth(vDeps.handleListCategories))
 	mux.HandleFunc("POST /api/v1/categories", withAuth(vDeps.handleCreateCategory))

@@ -1,6 +1,13 @@
 package auth
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func TestHashAndVerifyAuthKey_RoundTrip(t *testing.T) {
 	key := []byte("a-32-byte-ish-authkey-value-123")
@@ -70,4 +77,139 @@ func TestVerifyAgainstDummyHash_DoesNotPanic(t *testing.T) {
 	// regardless of input, since it runs on the "user not found" login path.
 	VerifyAgainstDummyHash([]byte("anything"))
 	VerifyAgainstDummyHash(nil)
+}
+
+func TestNewHasher_RejectsNonPositive(t *testing.T) {
+	for _, n := range []int{0, -1, -50} {
+		if _, err := NewHasher(n); err == nil {
+			t.Fatalf("expected NewHasher(%d) to fail", n)
+		}
+	}
+}
+
+func TestHasher_EnforcesMaxConcurrency(t *testing.T) {
+	const maxConcurrent = 3
+	const totalWorkers = 18
+
+	h, err := NewHasher(maxConcurrent)
+	if err != nil {
+		t.Fatalf("NewHasher: %v", err)
+	}
+
+	var inFlight atomic.Int32
+	var maxSeen atomic.Int32
+	h.idKeyFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+		cur := inFlight.Add(1)
+		for {
+			prev := maxSeen.Load()
+			if cur <= prev || maxSeen.CompareAndSwap(prev, cur) {
+				break
+			}
+		}
+		time.Sleep(15 * time.Millisecond)
+		inFlight.Add(-1)
+		out := make([]byte, keyLen)
+		copy(out, password)
+		return out
+	}
+
+	encoded, err := h.HashAuthKey(context.Background(), []byte("seed-key"))
+	if err != nil {
+		t.Fatalf("seed HashAuthKey: %v", err)
+	}
+	maxSeen.Store(0)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, totalWorkers)
+
+	for i := 0; i < totalWorkers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ctx := context.Background()
+			switch idx % 3 {
+			case 0:
+				if _, err := h.HashAuthKey(ctx, []byte("worker-key")); err != nil {
+					errCh <- err
+				}
+			case 1:
+				if _, err := h.VerifyAuthKey(ctx, []byte("seed-key"), encoded); err != nil {
+					errCh <- err
+				}
+			case 2:
+				if err := h.VerifyAgainstDummyHash(ctx, []byte("worker-key")); err != nil {
+					errCh <- err
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("unexpected worker error: %v", err)
+	}
+
+	if got := maxSeen.Load(); got > maxConcurrent {
+		t.Fatalf("concurrency limit exceeded: maxSeen=%d, limit=%d", got, maxConcurrent)
+	}
+	if got := maxSeen.Load(); got < maxConcurrent {
+		t.Fatalf("expected concurrency to reach limit=%d, only saw %d", maxConcurrent, got)
+	}
+}
+
+func TestHasher_ContextCancelledWhileWaiting(t *testing.T) {
+	h, err := NewHasher(1)
+	if err != nil {
+		t.Fatalf("NewHasher: %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blockOnce sync.Once
+
+	h.idKeyFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+		blockOnce.Do(func() {
+			close(entered)
+			<-release
+		})
+		out := make([]byte, keyLen)
+		copy(out, password)
+		return out
+	}
+
+	// Occupy the single semaphore slot.
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := h.HashAuthKey(context.Background(), []byte("holder-key"))
+		holderDone <- err
+	}()
+	<-entered
+
+	// Waiting caller with short timeout must fail with ErrArgon2Busy.
+	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := h.HashAuthKey(waitCtx, []byte("waiting-key")); !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("HashAuthKey: expected ErrArgon2Busy, got %v", err)
+	}
+
+	// Pre-cancelled context on VerifyAuthKey and VerifyAgainstDummyHash must also return ErrArgon2Busy.
+	cancelledCtx, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	if _, err := h.VerifyAuthKey(cancelledCtx, []byte("k"), dummyAuthKeyHash); !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("VerifyAuthKey: expected ErrArgon2Busy, got %v", err)
+	}
+	if err := h.VerifyAgainstDummyHash(cancelledCtx, []byte("k")); !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("VerifyAgainstDummyHash: expected ErrArgon2Busy, got %v", err)
+	}
+
+	// Release holder and verify the slot is usable again.
+	close(release)
+	if err := <-holderDone; err != nil {
+		t.Fatalf("holder failed: %v", err)
+	}
+	if _, err := h.HashAuthKey(context.Background(), []byte("after-release")); err != nil {
+		t.Fatalf("expected subsequent HashAuthKey to succeed after slot release, got %v", err)
+	}
 }

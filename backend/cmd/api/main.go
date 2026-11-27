@@ -19,7 +19,11 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg := config.Load(logger)
+	cfg, err := config.Load(logger)
+	if err != nil {
+		logger.Error("failed to load config", "error", err.Error())
+		os.Exit(1)
+	}
 
 	database, err := db.Open(cfg.DB)
 	if err != nil {
@@ -28,16 +32,16 @@ func main() {
 	}
 	defer database.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	authStore := store.NewMySQLStore(database)
-	mux := httpserver.NewMux(database, authStore, logger, cfg.Auth, cfg.AttachmentsDir, cfg.CORSAllowedOrigins)
+	mux := httpserver.NewMuxWithContext(ctx, database, authStore, logger, cfg.Auth, cfg.AttachmentsDir, cfg.CORSAllowedOrigins)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: mux,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		logger.Info("starting server", "port", cfg.HTTPPort)

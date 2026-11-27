@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -419,4 +420,56 @@ func TestLogout_IsIdempotent(t *testing.T) {
 	if rec1.Code != http.StatusNoContent || rec2.Code != http.StatusNoContent {
 		t.Fatalf("expected both logout calls to return 204, got %d and %d", rec1.Code, rec2.Code)
 	}
+}
+
+func TestAuthHandlers_Argon2BusyReturns503WithRetryAfter(t *testing.T) {
+	deps, _ := testDeps()
+	defer deps.lockout.Close()
+
+	// Seed a real user before testing cancelled contexts.
+	registerTestUser(t, deps, "busy@example.com")
+
+	assert503 := func(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: expected 503, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s: expected Retry-After header on 503 response", name)
+		}
+		var errResp errorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Fatalf("%s: decode error body: %v", name, err)
+		}
+		if errResp.Error != "service_unavailable" {
+			t.Fatalf("%s: expected service_unavailable error code, got %q", name, errResp.Error)
+		}
+	}
+
+	doCancelled := func(handler http.HandlerFunc, path string, body any) *httptest.ResponseRecorder {
+		var buf bytes.Buffer
+		_ = json.NewEncoder(&buf).Encode(body)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequest(http.MethodPost, path, &buf).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec
+	}
+
+	// 1. Register path (HashAuthKey)
+	assert503(t, "register", doCancelled(deps.handleRegister, "/api/v1/auth/register", validRegisterRequest("busy-new@example.com")))
+
+	// 2. Login path for existing user (VerifyAuthKey)
+	assert503(t, "login_existing", doCancelled(deps.handleLogin, "/api/v1/auth/login", loginRequest{
+		Email:   "busy@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}))
+
+	// 3. Login path for nonexistent user (VerifyAgainstDummyHash)
+	assert503(t, "login_nonexistent", doCancelled(deps.handleLogin, "/api/v1/auth/login", loginRequest{
+		Email:   "nobody-busy@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}))
 }
