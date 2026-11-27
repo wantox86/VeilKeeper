@@ -23,9 +23,9 @@ const (
 	httpReadHeaderTimeout = 10 * time.Second
 
 	// httpReadTimeout bounds the total time to read an entire request (headers +
-	// body). Kept generous at 60s so slow mobile clients can still upload
+	// body). Kept generous at 120s so slow mobile clients can still upload
 	// encrypted attachments up to 10 MiB.
-	httpReadTimeout = 60 * time.Second
+	httpReadTimeout = 120 * time.Second
 
 	// httpWriteTimeout bounds the time from the end of request header read to
 	// the end of response write. Kept generous at 120s so slow mobile clients

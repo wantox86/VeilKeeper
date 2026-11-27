@@ -23,7 +23,7 @@ func TestNewHTTPServerTimeoutsAndLimits(t *testing.T) {
 		want time.Duration
 	}{
 		{"ReadHeaderTimeout", srv.ReadHeaderTimeout, 10 * time.Second},
-		{"ReadTimeout", srv.ReadTimeout, 60 * time.Second},
+		{"ReadTimeout", srv.ReadTimeout, 120 * time.Second},
 		{"WriteTimeout", srv.WriteTimeout, 120 * time.Second},
 		{"IdleTimeout", srv.IdleTimeout, 120 * time.Second},
 	}

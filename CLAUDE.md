@@ -2067,7 +2067,7 @@ Hardens the API HTTP server against Slowloris/slow-client DoS and bumps the Go b
 
 - **HTTP server timeouts** (`backend/cmd/api/main.go`, `backend/cmd/api/main_test.go`): extracted
   `newHTTPServer(addr, handler)` with explicit named constants: `ReadHeaderTimeout` (10s),
-  `ReadTimeout` (60s), `WriteTimeout` (120s), `IdleTimeout` (120s), and `MaxHeaderBytes` (1 MiB).
+  `ReadTimeout` (120s), `WriteTimeout` (120s), `IdleTimeout` (120s), and `MaxHeaderBytes` (1 MiB).
   Read/Write budgets are deliberately generous to accommodate up to 10 MiB attachment transfers
   from slow mobile clients while still bounding Slowloris/idle-connection exposure. Graceful
   shutdown via `signal.NotifyContext` + `srv.Shutdown(shutdownCtx)` (with `cfg.ShutdownTimeout`
