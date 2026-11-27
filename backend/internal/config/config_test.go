@@ -3,11 +3,13 @@ package config
 import (
 	"net"
 	"testing"
+	"time"
 )
 
 func TestLoad_DefaultTrustedProxyCIDRs(t *testing.T) {
 	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("ARGON2_MAX_CONCURRENT", "")
+	t.Setenv("ARGON2_ACQUIRE_TIMEOUT_MS", "")
 
 	cfg, err := Load(nil)
 	if err != nil {
@@ -41,6 +43,9 @@ func TestLoad_DefaultTrustedProxyCIDRs(t *testing.T) {
 
 	if cfg.Auth.Argon2MaxConcurrent != DefaultArgon2MaxConcurrent {
 		t.Errorf("expected default Argon2MaxConcurrent=%d, got %d", DefaultArgon2MaxConcurrent, cfg.Auth.Argon2MaxConcurrent)
+	}
+	if cfg.Auth.Argon2AcquireTimeout != DefaultArgon2AcquireTimeout {
+		t.Errorf("expected default Argon2AcquireTimeout=%s, got %s", DefaultArgon2AcquireTimeout, cfg.Auth.Argon2AcquireTimeout)
 	}
 }
 
@@ -99,6 +104,28 @@ func TestLoad_Argon2MaxConcurrentValidation(t *testing.T) {
 			t.Setenv("ARGON2_MAX_CONCURRENT", raw)
 			if _, err := Load(nil); err == nil {
 				t.Fatalf("expected error for ARGON2_MAX_CONCURRENT=%q, got nil", raw)
+			}
+		})
+	}
+}
+
+func TestLoad_Argon2AcquireTimeoutValidation(t *testing.T) {
+	t.Run("valid positive", func(t *testing.T) {
+		t.Setenv("ARGON2_ACQUIRE_TIMEOUT_MS", "250")
+		cfg, err := Load(nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Auth.Argon2AcquireTimeout != 250*time.Millisecond {
+			t.Fatalf("expected 250ms, got %s", cfg.Auth.Argon2AcquireTimeout)
+		}
+	})
+
+	for _, raw := range []string{"0", "-1", "-500", "abc", "1.5"} {
+		t.Run("invalid_"+raw, func(t *testing.T) {
+			t.Setenv("ARGON2_ACQUIRE_TIMEOUT_MS", raw)
+			if _, err := Load(nil); err == nil {
+				t.Fatalf("expected error for ARGON2_ACQUIRE_TIMEOUT_MS=%q, got nil", raw)
 			}
 		})
 	}

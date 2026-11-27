@@ -156,6 +156,7 @@ func (l *IPLimiter) Allow(ip string) bool {
 		}
 		if len(kept) >= l.limit {
 			entry.times = kept
+			l.order.MoveToFront(entry.elem)
 			return false
 		}
 		entry.times = append(kept, now)

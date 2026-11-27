@@ -81,8 +81,13 @@ func TestVerifyAgainstDummyHash_DoesNotPanic(t *testing.T) {
 
 func TestNewHasher_RejectsNonPositive(t *testing.T) {
 	for _, n := range []int{0, -1, -50} {
-		if _, err := NewHasher(n); err == nil {
-			t.Fatalf("expected NewHasher(%d) to fail", n)
+		if _, err := NewHasher(n, DefaultArgon2AcquireTimeout); err == nil {
+			t.Fatalf("expected NewHasher(%d, default) to fail", n)
+		}
+	}
+	for _, d := range []time.Duration{0, -time.Millisecond, -time.Second} {
+		if _, err := NewHasher(1, d); err == nil {
+			t.Fatalf("expected NewHasher(1, %s) to fail", d)
 		}
 	}
 }
@@ -91,7 +96,7 @@ func TestHasher_EnforcesMaxConcurrency(t *testing.T) {
 	const maxConcurrent = 3
 	const totalWorkers = 18
 
-	h, err := NewHasher(maxConcurrent)
+	h, err := NewHasher(maxConcurrent, DefaultArgon2AcquireTimeout)
 	if err != nil {
 		t.Fatalf("NewHasher: %v", err)
 	}
@@ -160,7 +165,7 @@ func TestHasher_EnforcesMaxConcurrency(t *testing.T) {
 }
 
 func TestHasher_ContextCancelledWhileWaiting(t *testing.T) {
-	h, err := NewHasher(1)
+	h, err := NewHasher(1, DefaultArgon2AcquireTimeout)
 	if err != nil {
 		t.Fatalf("NewHasher: %v", err)
 	}
@@ -211,5 +216,73 @@ func TestHasher_ContextCancelledWhileWaiting(t *testing.T) {
 	}
 	if _, err := h.HashAuthKey(context.Background(), []byte("after-release")); err != nil {
 		t.Fatalf("expected subsequent HashAuthKey to succeed after slot release, got %v", err)
+	}
+}
+
+func TestHasher_AcquireTimeoutWithoutRequestDeadline(t *testing.T) {
+	const acquireTimeout = 50 * time.Millisecond
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blockOnce sync.Once
+
+	h, err := NewHasherWithKeyFunc(1, acquireTimeout, func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+		blockOnce.Do(func() {
+			close(entered)
+			<-release
+		})
+		out := make([]byte, keyLen)
+		copy(out, password)
+		return out
+	})
+	if err != nil {
+		t.Fatalf("NewHasherWithKeyFunc: %v", err)
+	}
+
+	// Occupy the single semaphore slot longer than acquireTimeout to also
+	// verify the timeout only bounds slot waiting, not the hash itself.
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := h.HashAuthKey(context.Background(), []byte("holder-key"))
+		holderDone <- err
+	}()
+	<-entered
+
+	// Request context has NO deadline: acquire must fail fast around
+	// acquireTimeout with ErrArgon2Busy instead of hanging indefinitely.
+	start := time.Now()
+	_, err = h.HashAuthKey(context.Background(), []byte("waiting-key"))
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("HashAuthKey: expected ErrArgon2Busy, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("HashAuthKey: expected wrapped context.DeadlineExceeded, got %v", err)
+	}
+	if elapsed < acquireTimeout/2 || elapsed > 10*acquireTimeout {
+		t.Fatalf("HashAuthKey: expected wait around %s, took %s", acquireTimeout, elapsed)
+	}
+
+	// VerifyAuthKey and VerifyAgainstDummyHash also fail with ErrArgon2Busy
+	// when the request context has no deadline.
+	if _, err := h.VerifyAuthKey(context.Background(), []byte("k"), dummyAuthKeyHash); !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("VerifyAuthKey: expected ErrArgon2Busy, got %v", err)
+	}
+	if err := h.VerifyAgainstDummyHash(context.Background(), []byte("k")); !errors.Is(err, ErrArgon2Busy) {
+		t.Fatalf("VerifyAgainstDummyHash: expected ErrArgon2Busy, got %v", err)
+	}
+
+	// Release holder; it ran longer than acquireTimeout and must still succeed.
+	close(release)
+	if err := <-holderDone; err != nil {
+		t.Fatalf("holder failed: %v", err)
+	}
+
+	// Slot must be free again (no leak on timeout paths).
+	if got := len(h.sem); got != 0 {
+		t.Fatalf("expected semaphore to be empty after holder release, got %d occupied", got)
+	}
+	if _, err := h.HashAuthKey(context.Background(), []byte("after-timeout")); err != nil {
+		t.Fatalf("expected subsequent HashAuthKey to succeed after timeout and release, got %v", err)
 	}
 }

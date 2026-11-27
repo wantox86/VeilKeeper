@@ -26,6 +26,10 @@ const (
 	// operations (~19 MiB each) so a burst of auth requests cannot OOM the
 	// 256 MiB API container.
 	DefaultArgon2MaxConcurrent = 4
+
+	// DefaultArgon2AcquireTimeout caps how long a request waits for an
+	// Argon2id concurrency slot before failing fast with HTTP 503.
+	DefaultArgon2AcquireTimeout = 3 * time.Second
 )
 
 // Config holds all runtime configuration for the API server.
@@ -87,6 +91,11 @@ type AuthConfig struct {
 	// running concurrently (ARGON2_MAX_CONCURRENT, default 4).
 	Argon2MaxConcurrent int
 
+	// Argon2AcquireTimeout caps how long a request waits for an Argon2id
+	// concurrency slot before failing fast with HTTP 503
+	// (ARGON2_ACQUIRE_TIMEOUT_MS, default 3000ms).
+	Argon2AcquireTimeout time.Duration
+
 	// InviteCodes gates POST /auth/register (SPEC-BASE.md Section 43:
 	// "fail clearly when required configuration is missing"). Unlike
 	// CORSAllowedOrigins/other list settings, an unset/empty INVITE_CODES
@@ -131,6 +140,11 @@ func Load(logger *slog.Logger) (Config, error) {
 		return Config{}, err
 	}
 
+	argon2AcquireTimeoutMs, err := parsePositiveIntEnv("ARGON2_ACQUIRE_TIMEOUT_MS", int(DefaultArgon2AcquireTimeout/time.Millisecond))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		HTTPPort:        getEnv("HTTP_PORT", "8080"),
 		ShutdownTimeout: 10 * time.Second,
@@ -152,6 +166,7 @@ func Load(logger *slog.Logger) (Config, error) {
 			RateLimitWindow:            time.Minute,
 			TrustedProxyCIDRs:          trustedCIDRs,
 			Argon2MaxConcurrent:        argon2MaxConcurrent,
+			Argon2AcquireTimeout:       time.Duration(argon2AcquireTimeoutMs) * time.Millisecond,
 			InviteCodes:                parseCommaListStrict(os.Getenv("INVITE_CODES")),
 		},
 		AttachmentsDir:     getEnv("ATTACHMENTS_DIR", "/data/attachments"),

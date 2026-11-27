@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -43,6 +44,11 @@ const (
 	// DefaultArgon2MaxConcurrent is the default semaphore capacity bounding
 	// simultaneous Argon2id hash/verify calls.
 	DefaultArgon2MaxConcurrent = 4
+
+	// DefaultArgon2AcquireTimeout is the default maximum duration a caller
+	// waits for an Argon2id concurrency slot before failing fast with
+	// ErrArgon2Busy.
+	DefaultArgon2AcquireTimeout = 3 * time.Second
 )
 
 const argon2idPrefix = "$argon2id$"
@@ -62,7 +68,7 @@ var defaultHasher *Hasher
 
 func init() {
 	var err error
-	defaultHasher, err = NewHasher(DefaultArgon2MaxConcurrent)
+	defaultHasher, err = NewHasher(DefaultArgon2MaxConcurrent, DefaultArgon2AcquireTimeout)
 	if err != nil {
 		panic("auth: failed to initialize default hasher: " + err.Error())
 	}
@@ -78,19 +84,36 @@ func init() {
 // so a burst of parallel auth requests cannot exhaust container memory
 // (~19 MiB per operation).
 type Hasher struct {
-	sem     chan struct{}
-	idKeyFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
+	sem            chan struct{}
+	acquireTimeout time.Duration
+	idKeyFn        func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
 }
 
 // NewHasher creates a Hasher allowing at most maxConcurrent Argon2id
-// operations in flight at once. maxConcurrent must be > 0.
-func NewHasher(maxConcurrent int) (*Hasher, error) {
+// operations in flight at once, waiting at most acquireTimeout for a slot
+// before returning ErrArgon2Busy. Both maxConcurrent and acquireTimeout must
+// be > 0.
+func NewHasher(maxConcurrent int, acquireTimeout time.Duration) (*Hasher, error) {
+	return NewHasherWithKeyFunc(maxConcurrent, acquireTimeout, argon2.IDKey)
+}
+
+// NewHasherWithKeyFunc is like NewHasher but allows injecting a custom
+// Argon2id key derivation function (e.g. a deterministic/blocking stub in
+// tests). If idKeyFn is nil, argon2.IDKey is used.
+func NewHasherWithKeyFunc(maxConcurrent int, acquireTimeout time.Duration, idKeyFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) (*Hasher, error) {
 	if maxConcurrent <= 0 {
 		return nil, fmt.Errorf("auth: maxConcurrent must be > 0, got %d", maxConcurrent)
 	}
+	if acquireTimeout <= 0 {
+		return nil, fmt.Errorf("auth: acquireTimeout must be > 0, got %s", acquireTimeout)
+	}
+	if idKeyFn == nil {
+		idKeyFn = argon2.IDKey
+	}
 	return &Hasher{
-		sem:     make(chan struct{}, maxConcurrent),
-		idKeyFn: argon2.IDKey,
+		sem:            make(chan struct{}, maxConcurrent),
+		acquireTimeout: acquireTimeout,
+		idKeyFn:        idKeyFn,
 	}, nil
 }
 
@@ -98,11 +121,20 @@ func (h *Hasher) acquire(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: %w", ErrArgon2Busy, err)
 	}
+
+	timeout := h.acquireTimeout
+	if timeout <= 0 {
+		timeout = DefaultArgon2AcquireTimeout
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	select {
 	case h.sem <- struct{}{}:
 		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("%w: %w", ErrArgon2Busy, ctx.Err())
+	case <-waitCtx.Done():
+		return fmt.Errorf("%w: %w", ErrArgon2Busy, waitCtx.Err())
 	}
 }
 

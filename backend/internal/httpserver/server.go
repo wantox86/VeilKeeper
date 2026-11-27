@@ -59,10 +59,14 @@ func NewMuxWithContext(ctx context.Context, pinger Pinger, st store.Store, logge
 	if maxConcurrent <= 0 {
 		maxConcurrent = auth.DefaultArgon2MaxConcurrent
 	}
-	hasher, err := auth.NewHasher(maxConcurrent)
+	acquireTimeout := authCfg.Argon2AcquireTimeout
+	if acquireTimeout <= 0 {
+		acquireTimeout = auth.DefaultArgon2AcquireTimeout
+	}
+	hasher, err := auth.NewHasher(maxConcurrent, acquireTimeout)
 	if err != nil {
 		// Defensive fallback: config.Load already rejects <= 0.
-		hasher, _ = auth.NewHasher(auth.DefaultArgon2MaxConcurrent)
+		hasher, _ = auth.NewHasher(auth.DefaultArgon2MaxConcurrent, auth.DefaultArgon2AcquireTimeout)
 	}
 
 	deps := &authDeps{

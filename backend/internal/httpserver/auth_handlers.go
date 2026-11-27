@@ -27,7 +27,7 @@ type authDeps struct {
 }
 
 var fallbackAuthHasher = func() *auth.Hasher {
-	h, err := auth.NewHasher(auth.DefaultArgon2MaxConcurrent)
+	h, err := auth.NewHasher(auth.DefaultArgon2MaxConcurrent, auth.DefaultArgon2AcquireTimeout)
 	if err != nil {
 		panic("httpserver: failed to initialize fallback hasher: " + err.Error())
 	}

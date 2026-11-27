@@ -114,6 +114,32 @@ func TestIPLimiter_MaxKeysEvictsExpiredFirstThenOldest(t *testing.T) {
 	}
 }
 
+func TestIPLimiter_RejectedRequestUpdatesLRU(t *testing.T) {
+	l := NewIPLimiterWithContext(context.Background(), 1, time.Minute, 2, time.Hour)
+	defer l.Close()
+
+	if !l.Allow("ip-1") {
+		t.Fatal("expected first request for ip-1 to be allowed")
+	}
+	if !l.Allow("ip-2") {
+		t.Fatal("expected first request for ip-2 to be allowed")
+	}
+	// Rejected request for ip-1 should still move ip-1 to MRU, making ip-2 the LRU.
+	if l.Allow("ip-1") {
+		t.Fatal("expected second request for ip-1 to be rejected")
+	}
+	// Adding ip-3 should evict ip-2 (LRU), keeping ip-1 rate-limited.
+	if !l.Allow("ip-3") {
+		t.Fatal("expected first request for ip-3 to be allowed")
+	}
+	if l.Allow("ip-1") {
+		t.Fatal("expected ip-1 to remain tracked and rate-limited after ip-3 evicted ip-2")
+	}
+	if !l.Allow("ip-2") {
+		t.Fatal("expected ip-2 to have been evicted as LRU and allowed again")
+	}
+}
+
 func TestIPLimiter_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	l := NewIPLimiterWithContext(ctx, 5, time.Minute, 100, 10*time.Millisecond)
