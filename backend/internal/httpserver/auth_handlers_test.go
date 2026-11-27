@@ -2,10 +2,12 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -418,5 +420,140 @@ func TestLogout_IsIdempotent(t *testing.T) {
 
 	if rec1.Code != http.StatusNoContent || rec2.Code != http.StatusNoContent {
 		t.Fatalf("expected both logout calls to return 204, got %d and %d", rec1.Code, rec2.Code)
+	}
+}
+
+func TestAuthHandlers_Argon2BusyReturns503WithRetryAfter(t *testing.T) {
+	deps, _ := testDeps()
+	defer deps.lockout.Close()
+
+	// Seed a real user before testing cancelled contexts.
+	registerTestUser(t, deps, "busy@example.com")
+
+	assert503 := func(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: expected 503, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s: expected Retry-After header on 503 response", name)
+		}
+		var errResp errorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Fatalf("%s: decode error body: %v", name, err)
+		}
+		if errResp.Error != "service_unavailable" {
+			t.Fatalf("%s: expected service_unavailable error code, got %q", name, errResp.Error)
+		}
+	}
+
+	doCancelled := func(handler http.HandlerFunc, path string, body any) *httptest.ResponseRecorder {
+		var buf bytes.Buffer
+		_ = json.NewEncoder(&buf).Encode(body)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequest(http.MethodPost, path, &buf).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec
+	}
+
+	// 1. Register path (HashAuthKey)
+	assert503(t, "register", doCancelled(deps.handleRegister, "/api/v1/auth/register", validRegisterRequest("busy-new@example.com")))
+
+	// 2. Login path for existing user (VerifyAuthKey)
+	assert503(t, "login_existing", doCancelled(deps.handleLogin, "/api/v1/auth/login", loginRequest{
+		Email:   "busy@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}))
+
+	// 3. Login path for nonexistent user (VerifyAgainstDummyHash)
+	assert503(t, "login_nonexistent", doCancelled(deps.handleLogin, "/api/v1/auth/login", loginRequest{
+		Email:   "nobody-busy@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}))
+}
+
+func TestAuthHandlers_Argon2TimeoutReturns503WithRetryAfter(t *testing.T) {
+	const acquireTimeout = 50 * time.Millisecond
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var blockNext atomic.Bool
+
+	hasher, err := auth.NewHasherWithKeyFunc(1, acquireTimeout, func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+		if blockNext.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
+		out := make([]byte, keyLen)
+		copy(out, password)
+		return out
+	})
+	if err != nil {
+		t.Fatalf("NewHasherWithKeyFunc: %v", err)
+	}
+
+	deps, _ := testDeps()
+	defer deps.lockout.Close()
+	deps.hasher = hasher
+
+	// Seed a real user while the semaphore is unblocked.
+	registerTestUser(t, deps, "timeout-user@example.com")
+
+	// Occupy the single semaphore slot with a blocking call.
+	blockNext.Store(true)
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := hasher.HashAuthKey(context.Background(), []byte("holder-key"))
+		holderDone <- err
+	}()
+	<-entered
+
+	assert503 := func(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: expected 503, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Retry-After"); got != "1" {
+			t.Fatalf("%s: expected Retry-After: 1 header on 503 response, got %q", name, got)
+		}
+		var errResp errorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&errResp); err != nil {
+			t.Fatalf("%s: decode error body: %v", name, err)
+		}
+		if errResp.Error != "service_unavailable" {
+			t.Fatalf("%s: expected service_unavailable error code, got %q", name, errResp.Error)
+		}
+	}
+
+	// Normal requests (no deadline/cancellation on r.Context()) must fail fast
+	// with 503 + Retry-After once acquireTimeout elapses.
+	assert503(t, "register", doJSON(t, deps.handleRegister, http.MethodPost, "/api/v1/auth/register", validRegisterRequest("timeout-new@example.com"), nil))
+
+	assert503(t, "login_existing", doJSON(t, deps.handleLogin, http.MethodPost, "/api/v1/auth/login", loginRequest{
+		Email:   "timeout-user@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}, nil))
+
+	assert503(t, "login_nonexistent", doJSON(t, deps.handleLogin, http.MethodPost, "/api/v1/auth/login", loginRequest{
+		Email:   "timeout-nobody@example.com",
+		AuthKey: base64.StdEncoding.EncodeToString(rawAuthKey()),
+	}, nil))
+
+	// Release holder and verify the slot is usable again.
+	close(release)
+	if err := <-holderDone; err != nil {
+		t.Fatalf("holder failed: %v", err)
+	}
+
+	rec := doJSON(t, deps.handleLogin, http.MethodPost, "/api/v1/auth/login", loginRequest{
+		Email:            "timeout-user@example.com",
+		AuthKey:          base64.StdEncoding.EncodeToString(rawAuthKey()),
+		DeviceIdentifier: "dev-after-timeout",
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected login to succeed after slot release, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
