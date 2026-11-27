@@ -28,7 +28,9 @@ services:
     ports:
       # Host port 18091 -- NOT 18080, which is already used by the Qoder
       # build's `vk-sprint3-veilkeepers-api-1` container on this same host.
-      - "18091:8080"
+      # Bind ke loopback saja (hardening): akses publik lewat cloudflared
+      # (localhost:18091); nggak ada client yang akses via IP LAN.
+      - "127.0.0.1:18091:8080"
     volumes:
       - ./data/attachments:/data/attachments
     healthcheck:
@@ -49,6 +51,13 @@ services:
           memory: 256M
         reservations:
           memory: 64M
+    security_opt:
+      - "no-new-privileges:true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # LEGACY (2026-09-22): mysql service lama, sudah tidak dipakai `api`
   # (lihat DB_HOST di atas, sekarang consolidated-mysql). Definisi dibiarkan

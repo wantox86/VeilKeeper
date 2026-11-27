@@ -50,7 +50,7 @@ healthchecks, `restart: unless-stopped`, and resource limits appropriate for a h
 `docker compose down`. To wipe everything including vault data: `docker compose down -v`
 (only do this if you mean it — see Backup below first).
 
-The API listens on host port **18091** (not 18080 — that's used by an unrelated project on
+The API listens on host port **18091**, bound to `127.0.0.1` only (reach it via a reverse proxy/tunnel on the same host, or edit the bind to expose it on the LAN) (not 18080 — that's used by an unrelated project on
 the same shared Docker host; see `CLAUDE.md` for why). If you're deploying somewhere without
 that constraint, feel free to remap it in `docker-compose.yml`.
 

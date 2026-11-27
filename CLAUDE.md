@@ -136,7 +136,7 @@ services:
   api:
     ...
     ports:
-      - "18091:8080"   # NOT 18080 -- that's the Qoder build's port
+      - "127.0.0.1:18091:8080"   # loopback only (cloudflared); NOT 18080 -- that's the Qoder build's port
   mysql:
     ...
     # no host port published -- internal-only, same good practice the Qoder build already uses
