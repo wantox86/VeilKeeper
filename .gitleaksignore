@@ -1,0 +1,4 @@
+# False positive gitleaks generic-api-key: nama variabel `idKeyFn` (fungsi KDF argon2.IDKey), bukan secret.
+# Terikat ke commit 34ac3a2 (history PR VK-1); kode kini memakai nama `kdfFn`.
+34ac3a2fdb278769800f84cb5193bbfef1daf2bc:backend/internal/auth/argon2id.go:generic-api-key:102
+34ac3a2fdb278769800f84cb5193bbfef1daf2bc:backend/internal/auth/argon2id.go:generic-api-key:111

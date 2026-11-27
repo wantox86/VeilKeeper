@@ -22,7 +22,23 @@ type authDeps struct {
 	logger  *slog.Logger
 	cfg     config.AuthConfig
 	lockout *auth.AccountLockout
+	hasher  *auth.Hasher
 	nowFunc func() time.Time
+}
+
+var fallbackAuthHasher = func() *auth.Hasher {
+	h, err := auth.NewHasher(auth.DefaultArgon2MaxConcurrent, auth.DefaultArgon2AcquireTimeout)
+	if err != nil {
+		panic("httpserver: failed to initialize fallback hasher: " + err.Error())
+	}
+	return h
+}()
+
+func (d *authDeps) getHasher() *auth.Hasher {
+	if d.hasher != nil {
+		return d.hasher
+	}
+	return fallbackAuthHasher
 }
 
 const maxAuthBodyBytes = 1 << 16 // 64 KiB -- generous for these small JSON payloads
@@ -193,8 +209,12 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authKeyHash, err := auth.HashAuthKey(authKey)
+	authKeyHash, err := d.getHasher().HashAuthKey(r.Context(), authKey)
 	if err != nil {
+		if errors.Is(err, auth.ErrArgon2Busy) {
+			writeServiceUnavailable(w)
+			return
+		}
 		d.logger.Error("register: failed to hash auth key", "error", err.Error())
 		writeInternalError(w)
 		return
@@ -256,7 +276,15 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := d.store.GetUserByEmail(r.Context(), email)
 	if errors.Is(err, store.ErrNotFound) {
-		auth.VerifyAgainstDummyHash(authKey) // keep timing consistent, see doc comment there
+		if err := d.getHasher().VerifyAgainstDummyHash(r.Context(), authKey); err != nil {
+			if errors.Is(err, auth.ErrArgon2Busy) {
+				writeServiceUnavailable(w)
+				return
+			}
+			d.logger.Error("login: dummy verify failed", "error", err.Error())
+			writeInternalError(w)
+			return
+		}
 		d.lockout.RecordFailure(email)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or auth key")
 		return
@@ -267,8 +295,12 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := auth.VerifyAuthKey(authKey, user.AuthKeyHash)
+	ok, err := d.getHasher().VerifyAuthKey(r.Context(), authKey, user.AuthKeyHash)
 	if err != nil {
+		if errors.Is(err, auth.ErrArgon2Busy) {
+			writeServiceUnavailable(w)
+			return
+		}
 		d.logger.Error("login: verify failed", "error", err.Error())
 		writeInternalError(w)
 		return
@@ -379,4 +411,9 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func writeInternalError(w http.ResponseWriter) {
 	writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "internal_error", Message: "Something went wrong."})
+}
+
+func writeServiceUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily busy, please try again")
 }

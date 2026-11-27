@@ -9,10 +9,27 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	// DefaultTrustedProxyCIDRs are the direct-peer CIDRs trusted to supply
+	// CF-Connecting-IP (loopback + standard Docker bridge range). Deliberately
+	// excludes 192.168.0.0/16 so arbitrary LAN hosts cannot spoof client IPs.
+	DefaultTrustedProxyCIDRs = "127.0.0.0/8,::1/128,172.16.0.0/12"
+
+	// DefaultArgon2MaxConcurrent bounds simultaneous Argon2id hash/verify
+	// operations (~19 MiB each) so a burst of auth requests cannot OOM the
+	// 256 MiB API container.
+	DefaultArgon2MaxConcurrent = 4
+
+	// DefaultArgon2AcquireTimeout caps how long a request waits for an
+	// Argon2id concurrency slot before failing fast with HTTP 503.
+	DefaultArgon2AcquireTimeout = 3 * time.Second
 )
 
 // Config holds all runtime configuration for the API server.
@@ -65,6 +82,20 @@ type AuthConfig struct {
 	RateLimitRequestsPerWindow int
 	RateLimitWindow            time.Duration
 
+	// TrustedProxyCIDRs is the allowlist of direct-peer CIDRs (e.g. local
+	// cloudflared / Docker bridge) whose CF-Connecting-IP header is trusted
+	// when keying the per-IP rate limiter.
+	TrustedProxyCIDRs []*net.IPNet
+
+	// Argon2MaxConcurrent caps the number of Argon2id hash/verify operations
+	// running concurrently (ARGON2_MAX_CONCURRENT, default 4).
+	Argon2MaxConcurrent int
+
+	// Argon2AcquireTimeout caps how long a request waits for an Argon2id
+	// concurrency slot before failing fast with HTTP 503
+	// (ARGON2_ACQUIRE_TIMEOUT_MS, default 3000ms).
+	Argon2AcquireTimeout time.Duration
+
 	// InviteCodes gates POST /auth/register (SPEC-BASE.md Section 43:
 	// "fail clearly when required configuration is missing"). Unlike
 	// CORSAllowedOrigins/other list settings, an unset/empty INVITE_CODES
@@ -96,8 +127,23 @@ type DBConfig struct {
 // logger is used only to warn about non-fatal misconfiguration (e.g. a
 // missing SERVER_PEPPER). It may be nil, in which case warnings are
 // silently skipped (used by tests).
-func Load(logger *slog.Logger) Config {
+func Load(logger *slog.Logger) (Config, error) {
 	pepper := loadPepper(logger)
+
+	trustedCIDRs, err := parseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return Config{}, err
+	}
+
+	argon2MaxConcurrent, err := parsePositiveIntEnv("ARGON2_MAX_CONCURRENT", DefaultArgon2MaxConcurrent)
+	if err != nil {
+		return Config{}, err
+	}
+
+	argon2AcquireTimeoutMs, err := parsePositiveIntEnv("ARGON2_ACQUIRE_TIMEOUT_MS", int(DefaultArgon2AcquireTimeout/time.Millisecond))
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		HTTPPort:        getEnv("HTTP_PORT", "8080"),
@@ -118,11 +164,14 @@ func Load(logger *slog.Logger) Config {
 			SessionMaxLifetime:         getEnvDuration("SESSION_MAX_HOURS", 0) * time.Hour,
 			RateLimitRequestsPerWindow: getEnvInt("AUTH_RATE_LIMIT_REQUESTS", 20),
 			RateLimitWindow:            time.Minute,
+			TrustedProxyCIDRs:          trustedCIDRs,
+			Argon2MaxConcurrent:        argon2MaxConcurrent,
+			Argon2AcquireTimeout:       time.Duration(argon2AcquireTimeoutMs) * time.Millisecond,
 			InviteCodes:                parseCommaListStrict(os.Getenv("INVITE_CODES")),
 		},
 		AttachmentsDir:     getEnv("ATTACHMENTS_DIR", "/data/attachments"),
 		CORSAllowedOrigins: getEnvList("CORS_ALLOWED_ORIGINS", []string{"http://localhost:5173", "http://127.0.0.1:5173"}),
-	}
+	}, nil
 }
 
 // loadPepper reads SERVER_PEPPER (expected: base64 or any opaque string, at
@@ -219,4 +268,37 @@ func parseCommaListStrict(v string) []string {
 		}
 	}
 	return out
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
+	if strings.TrimSpace(raw) == "" {
+		raw = DefaultTrustedProxyCIDRs
+	}
+
+	parts := strings.Split(raw, ",")
+	cidrs := make([]*net.IPNet, 0, len(parts))
+	for _, p := range parts {
+		entry := strings.TrimSpace(p)
+		if entry == "" {
+			return nil, fmt.Errorf("config: invalid TRUSTED_PROXY_CIDRS: empty CIDR entry in %q", raw)
+		}
+		_, ipNet, err := net.ParseCIDR(entry)
+		if err != nil {
+			return nil, fmt.Errorf("config: invalid TRUSTED_PROXY_CIDRS entry %q: %w", entry, err)
+		}
+		cidrs = append(cidrs, ipNet)
+	}
+	return cidrs, nil
+}
+
+func parsePositiveIntEnv(key string, fallback int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("config: %s must be a positive integer, got %q", key, v)
+	}
+	return n, nil
 }
