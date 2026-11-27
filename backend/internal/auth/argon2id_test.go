@@ -103,7 +103,7 @@ func TestHasher_EnforcesMaxConcurrency(t *testing.T) {
 
 	var inFlight atomic.Int32
 	var maxSeen atomic.Int32
-	h.idKeyFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+	h.kdfFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
 		cur := inFlight.Add(1)
 		for {
 			prev := maxSeen.Load()
@@ -174,7 +174,7 @@ func TestHasher_ContextCancelledWhileWaiting(t *testing.T) {
 	release := make(chan struct{})
 	var blockOnce sync.Once
 
-	h.idKeyFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
+	h.kdfFn = func(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) []byte {
 		blockOnce.Do(func() {
 			close(entered)
 			<-release

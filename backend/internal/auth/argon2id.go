@@ -86,7 +86,7 @@ func init() {
 type Hasher struct {
 	sem            chan struct{}
 	acquireTimeout time.Duration
-	idKeyFn        func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
+	kdfFn          func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
 }
 
 // NewHasher creates a Hasher allowing at most maxConcurrent Argon2id
@@ -99,21 +99,21 @@ func NewHasher(maxConcurrent int, acquireTimeout time.Duration) (*Hasher, error)
 
 // NewHasherWithKeyFunc is like NewHasher but allows injecting a custom
 // Argon2id key derivation function (e.g. a deterministic/blocking stub in
-// tests). If idKeyFn is nil, argon2.IDKey is used.
-func NewHasherWithKeyFunc(maxConcurrent int, acquireTimeout time.Duration, idKeyFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) (*Hasher, error) {
+// tests). If kdfFn is nil, argon2.IDKey is used.
+func NewHasherWithKeyFunc(maxConcurrent int, acquireTimeout time.Duration, kdfFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) (*Hasher, error) {
 	if maxConcurrent <= 0 {
 		return nil, fmt.Errorf("auth: maxConcurrent must be > 0, got %d", maxConcurrent)
 	}
 	if acquireTimeout <= 0 {
 		return nil, fmt.Errorf("auth: acquireTimeout must be > 0, got %s", acquireTimeout)
 	}
-	if idKeyFn == nil {
-		idKeyFn = argon2.IDKey
+	if kdfFn == nil {
+		kdfFn = argon2.IDKey
 	}
 	return &Hasher{
 		sem:            make(chan struct{}, maxConcurrent),
 		acquireTimeout: acquireTimeout,
-		idKeyFn:        idKeyFn,
+		kdfFn:          kdfFn,
 	}, nil
 }
 
@@ -143,8 +143,8 @@ func (h *Hasher) release() {
 }
 
 func (h *Hasher) keyFn() func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
-	if h.idKeyFn != nil {
-		return h.idKeyFn
+	if h.kdfFn != nil {
+		return h.kdfFn
 	}
 	return argon2.IDKey
 }
@@ -211,7 +211,7 @@ func VerifyAuthKey(authKey []byte, encoded string) (bool, error) {
 	return defaultHasher.VerifyAuthKey(context.Background(), authKey, encoded)
 }
 
-func hashAuthKeyRaw(authKey []byte, idKeyFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) (string, error) {
+func hashAuthKeyRaw(authKey []byte, kdfFn func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) (string, error) {
 	if len(authKey) == 0 {
 		return "", errors.New("auth: empty auth key")
 	}
@@ -221,7 +221,7 @@ func hashAuthKeyRaw(authKey []byte, idKeyFn func(password, salt []byte, time, me
 		return "", fmt.Errorf("auth: generate salt: %w", err)
 	}
 
-	hash := idKeyFn(authKey, salt, authHashIterations, authHashMemoryKiB, authHashParallel, authHashKeyLen)
+	hash := kdfFn(authKey, salt, authHashIterations, authHashMemoryKiB, authHashParallel, authHashKeyLen)
 
 	encoded := fmt.Sprintf("%sv=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2idPrefix,
