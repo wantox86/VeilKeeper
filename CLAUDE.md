@@ -2060,3 +2060,21 @@ toggle. Touches all three surfaces (backend, Android, Web); no crypto/key-hierar
   before considering this fully closed on Web specifically.
 - `.env.example` updated with `INVITE_CODES` (placeholder codes, comment explaining fail-closed
   behavior); this file updated to mark Task #15 complete.
+
+### VK-2 -- HTTP server timeouts & Go 1.26 toolchain bump -- complete
+
+Hardens the API HTTP server against Slowloris/slow-client DoS and bumps the Go build/CI toolchain so `govulncheck` passes cleanly:
+
+- **HTTP server timeouts** (`backend/cmd/api/main.go`, `backend/cmd/api/main_test.go`): extracted
+  `newHTTPServer(addr, handler)` with explicit named constants: `ReadHeaderTimeout` (10s),
+  `ReadTimeout` (60s), `WriteTimeout` (120s), `IdleTimeout` (120s), and `MaxHeaderBytes` (1 MiB).
+  Read/Write budgets are deliberately generous to accommodate up to 10 MiB attachment transfers
+  from slow mobile clients while still bounding Slowloris/idle-connection exposure. Graceful
+  shutdown via `signal.NotifyContext` + `srv.Shutdown(shutdownCtx)` (with `cfg.ShutdownTimeout`
+  and error logging) was already in place and left unchanged. Added unit test
+  `TestNewHTTPServerTimeoutsAndLimits`.
+- **Go 1.26 toolchain bump** (`backend/Dockerfile`, `.github/workflows/backend.yml`,
+  `.github/workflows/security.yml`): updated builder image (`golang:1.26-alpine`) and CI
+  `setup-go` (`go-version: "1.26"`) to pull the patched Go 1.26 stdlib (resolving 9 stdlib CVEs
+  flagged by `govulncheck` on Go 1.25.14). Kept `alpine:3.20` runtime image and `backend/go.mod`
+  `go 1.25.0` directive unchanged so local `GOTOOLCHAIN=local` testing remains compatible.
